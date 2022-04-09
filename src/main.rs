@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::mem;
+use std::process::{Command, Stdio};
 
 extern crate hex;
 extern crate memmap2;
@@ -113,7 +114,7 @@ pub struct BpfInstT {
     pub imm: i32,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum BpfClassT {
     BpfLd(BpfModeT, u8),          // 0
     BpfAlu(BpfAluOpT, BpfSrcT),   // 4
@@ -123,21 +124,21 @@ pub enum BpfClassT {
 }
 use BpfClassT::*;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum BpfModeT {
     BpfImm, // 0
     // TODO: unsupported for now
 }
 use BpfModeT::*;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum BpfSrcT {
     BpfX,
     BpfK,
 }
 use BpfSrcT::*;
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum BpfAluOpT {
     BpfAdd,  // 0
     BpfSub,  // 1
@@ -155,7 +156,7 @@ pub enum BpfAluOpT {
 }
 use BpfAluOpT::*;
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum BpfJmpOpT {
     BpfJa,   // 0
     BpfJeq,
@@ -799,9 +800,18 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
                 }
             },
 
-            _ => unimplemented!(),
+            _ => unimplemented!("{:?}", opc_d),
 
         }
+
+        // pop BpfInstT { opc: 36, regs: 1, off: 0, imm: 184466110 }
+        // push BpfInstT { opc: 36, regs: 1, off: 0, imm: 184466110 }
+        // if(image.contains(&(0x5a as u8))) {
+        //     println!("pop {:?}", cinst)
+        // }
+        // if(image.contains(&(0x50 as u8))) {
+        //     println!("push {:?}", cinst)
+        // }
 
         if let Some(ref mut oimg) = outimg {
             oimg[clen..clen+ilen].copy_from_slice(&image[..ilen]);
@@ -872,7 +882,90 @@ pub fn parse_raw_bytes(inp: &[u8]) -> Option<Vec<BpfInstT>> {
     Some(ret)
 }
 
+fn is_supported(opc: u8) -> bool {
+    if opc & 0x7 == 0 {
+        return ((opc & 0x18) == 0x18) && ((opc & 0xe0) == 0x00);
+    }
+    return true;
+}
+
+fn print_all() {
+    let mut instructions: Vec<BpfInstT> = Vec::with_capacity(u16::MAX as usize);
+    let mut done = false;
+    for opc in 0..256 {
+        if done { break }
+        for regs in 0..256 {
+            if done { break }
+            if true {
+                if !is_supported(opc as u8) {
+                    continue;
+                }
+                if (regs & 0xf0) > 0x90 || (regs & 0x0f) > 0x09 {
+                    continue;
+                }
+                let inst = BpfInstT {
+                    opc: opc as u8,
+                    regs: regs as u8,
+                    off: 0x0,
+                    imm: 0x0afebabe as i32,
+                };
+                if inst.code().is_some() {
+                    instructions.push(inst);
+                }
+            } else {
+                instructions.push(BpfInstT { opc: 36, regs: 1, off: 0, imm: 0 });
+                done = true;
+            }
+        }
+    }
+
+    println!("{}/{} supported", instructions.len(), u16::MAX);
+
+    let plen = PROLOGUELEN as u32;
+    let mut addrs: Vec<u32> = (0..instructions.len() + 1).map(|i| plen + 64 * i as u32).collect();
+
+    let size = PROLOGUELEN + 1000000 + 8 * instructions.len() + EPILOGUELEN;
+    let mut image: Vec<u8> = vec![0; size];
+    let x = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
+
+    disas(image.as_slice(), "x")
+}
+
+fn disas(code: &[u8], name: &str) {
+    let f1 = &format!("out_{}", name);
+    let f2 = &format!("out2_{}", name);
+
+    std::fs::File::create(f1).unwrap().write_all(code).unwrap();
+
+    let out = Command::new("ndisasm")
+        .args(["-b", "64"])
+        .arg(&f1)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output().unwrap();
+
+    std::fs::write(f2, out.stdout.as_slice()).unwrap();
+}
+
+fn exploit() {
+    let mut instructions: Vec<BpfInstT> = Vec::with_capacity(u16::MAX as usize);
+    // instructions.push(BpfInstT { opc: 7, regs: 0, off: 0, imm: 0 });
+    // instructions.push(BpfInstT { opc: 6, regs: 0, off: 0, imm: 0 });
+    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 0, imm: 0 });
+    instructions.push(BpfInstT { opc: 36, regs: 1, off: 0, imm: 0 });
+    run(&instructions);
+}
+
 fn main() {
+
+    if true {
+        print_all();
+        return;
+    }
+
+    // exploit();
+    // return;
+
     print!("Input: ");
     io::stdout().flush().unwrap();
     let mut buffer = String::new();
@@ -930,6 +1023,8 @@ pub fn run(insts: &Vec<BpfInstT>) {
                 let mut final_buffer = MmapMut::map_anon(MAXBPFINST * 64 + PROLOGUELEN + EPILOGUELEN).unwrap();
 
                 final_buffer.as_mut().copy_from_slice(&image);
+
+                disas(image.as_slice(), "run");
 
                 let final_buffer = final_buffer.make_exec().unwrap();
                 let func = unsafe {
