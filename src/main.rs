@@ -885,58 +885,61 @@ fn main() {
         }
 
         if let Some(insts) = parse_raw_bytes(&inbytes) {
-
-            match verify_jmps(&insts) {
-                Ok(_) => (),
-                Err(e) => {
-                    println!("{}", e);
-                    return;
-                },
-            };
-
-            let mut olen = insts.len() * 64;
-            let plen = PROLOGUELEN as u32;
-            let mut addrs: Vec<u32> = (0..insts.len()+1).map(|i| plen + 64 * i as u32).collect();
-
-            let mut flag = false;
-
-            for _ in 0..20 {
-                if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
-                    if nlen == olen {
-                        flag = true;
-                        break;
-                    }
-
-                    olen = nlen;
-                } else {
-                    break;
-                }
-            }
-            let mut image : [u8; 8192 + PROLOGUELEN + EPILOGUELEN] = [0; 8192 + PROLOGUELEN + EPILOGUELEN];
-
-            if flag {
-                if let Some(nlen) = do_jit(&insts, &mut addrs, Some(&mut image)) {
-                    if nlen == olen {
-                        let mut final_buffer = MmapMut::map_anon(MAXBPFINST * 64 + PROLOGUELEN + EPILOGUELEN).unwrap();
-
-                        final_buffer.as_mut().copy_from_slice(&image);
-
-                        let final_buffer = final_buffer.make_exec().unwrap();
-                        let func = unsafe {
-                            mem::transmute::<*const u8, fn() -> i32>(final_buffer.as_ptr())
-                        };
-
-                        println!("Running jitted code:");
-                        io::stdout().flush().unwrap();
-                        func();
-                    }
-                }
-            }
-
+            run(&insts)
         } else {
             println!("Incomplete Bytecode in Input!");
         }
     } else {
         println!("Bad Input in Hex!");
+    }
+}
+
+// NOTE: I extracted this method
+fn run(insts: &Vec<BpfInstT>) {
+    match verify_jmps(&insts) {
+        Ok(_) => (),
+        Err(e) => {
+            println!("{}", e);
+            return;
+        },
+    };
+
+    let mut olen = insts.len() * 64;
+    let plen = PROLOGUELEN as u32;
+    let mut addrs: Vec<u32> = (0..insts.len() + 1).map(|i| plen + 64 * i as u32).collect();
+
+    let mut flag = false;
+
+    for _ in 0..20 {
+        if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
+            if nlen == olen {
+                flag = true;
+                break;
+            }
+
+            olen = nlen;
+        } else {
+            break;
+        }
+    }
+    let mut image: [u8; 8192 + PROLOGUELEN + EPILOGUELEN] = [0; 8192 + PROLOGUELEN + EPILOGUELEN];
+
+    if flag {
+        if let Some(nlen) = do_jit(&insts, &mut addrs, Some(&mut image)) {
+            if nlen == olen {
+                let mut final_buffer = MmapMut::map_anon(MAXBPFINST * 64 + PROLOGUELEN + EPILOGUELEN).unwrap();
+
+                final_buffer.as_mut().copy_from_slice(&image);
+
+                let final_buffer = final_buffer.make_exec().unwrap();
+                let func = unsafe {
+                    mem::transmute::<*const u8, fn() -> i32>(final_buffer.as_ptr())
+                };
+
+                println!("Running jitted code:");
+                io::stdout().flush().unwrap();
+                func();
+            }
+        }
     }
 }
