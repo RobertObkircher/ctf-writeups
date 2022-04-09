@@ -13,7 +13,7 @@ impl<'a> Arbitrary<'a> for FuzzInput {
     fn arbitrary(u: &mut Unstructured<'a>) -> libfuzzer_sys::arbitrary::Result<Self> {
         let len = u8::arbitrary(u)? % MAXBPFINST as u8;
         let mut instructions = Vec::with_capacity(len.into());
-        for i in 0..len {
+        for _ in 0..len {
             instructions.push(BpfInstT::arbitrary(u)?);
         }
         Ok(FuzzInput{instructions})
@@ -21,6 +21,5 @@ impl<'a> Arbitrary<'a> for FuzzInput {
 }
 
 fuzz_target!(|data: FuzzInput| {
-    // tinebpf::main::run(data);
-    // fuzzed code goes here
+    tinebpf::main::run(&data.instructions);
 });
