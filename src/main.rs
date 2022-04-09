@@ -5,7 +5,7 @@ extern crate hex;
 extern crate memmap2;
 use memmap2::MmapMut;
 
-static MAXBPFINST : usize = 128;
+pub static MAXBPFINST : usize = 128;
 
 // prologue to add:
 //   xor rax, rax
@@ -105,16 +105,16 @@ impl BpfRegT {
     }
 }
 
-#[derive(Debug)]
-struct BpfInstT {
-    opc: u8,
-    regs: u8, /* dreg, sreg 4 bits each */
-    off: i16,
-    imm: i32,
+#[derive(arbitrary::Arbitrary, Debug)]
+pub struct BpfInstT {
+    pub opc: u8,
+    pub regs: u8, /* dreg, sreg 4 bits each */
+    pub off: i16,
+    pub imm: i32,
 }
 
 #[derive(PartialEq)]
-enum BpfClassT {
+pub enum BpfClassT {
     BpfLd(BpfModeT, u8),          // 0
     BpfAlu(BpfAluOpT, BpfSrcT),   // 4
     BpfJmp(BpfJmpOpT, BpfSrcT),   // 5
@@ -124,21 +124,21 @@ enum BpfClassT {
 use BpfClassT::*;
 
 #[derive(PartialEq)]
-enum BpfModeT {
+pub enum BpfModeT {
     BpfImm, // 0
     // TODO: unsupported for now
 }
 use BpfModeT::*;
 
 #[derive(PartialEq)]
-enum BpfSrcT {
+pub enum BpfSrcT {
     BpfX,
     BpfK,
 }
 use BpfSrcT::*;
 
 #[derive(PartialEq, Copy, Clone)]
-enum BpfAluOpT {
+pub enum BpfAluOpT {
     BpfAdd,  // 0
     BpfSub,  // 1
     BpfMul,  // 2
@@ -156,7 +156,7 @@ enum BpfAluOpT {
 use BpfAluOpT::*;
 
 #[derive(PartialEq, Copy, Clone)]
-enum BpfJmpOpT {
+pub enum BpfJmpOpT {
     BpfJa,   // 0
     BpfJeq,
     BpfJset,
@@ -476,7 +476,7 @@ fn emit_cond_jump(image: &mut[u8], cnt: usize, addrs: &mut [u32], cidx: usize, o
     }
 }
 
-fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u8]>) -> Option<usize> {
+pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u8]>) -> Option<usize> {
     let mut clen: usize = 0;
 
     // emit prologue
@@ -820,7 +820,7 @@ fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u8]>)
     Some(clen)
 }
 
-fn verify_jmps(b_inst: &[BpfInstT]) -> Result<(), &str> {
+pub fn verify_jmps(b_inst: &[BpfInstT]) -> Result<(), &str> {
     let mut idx = 0;
     while idx < b_inst.len() {
         let inst = &b_inst[idx];
@@ -856,7 +856,7 @@ fn verify_jmps(b_inst: &[BpfInstT]) -> Result<(), &str> {
     Ok(())
 }
 
-fn parse_raw_bytes(inp: &[u8]) -> Option<Vec<BpfInstT>> {
+pub fn parse_raw_bytes(inp: &[u8]) -> Option<Vec<BpfInstT>> {
     if inp.len() % 8 != 0 { return None; }
 
     let mut ret = Vec::new();
@@ -895,7 +895,7 @@ fn main() {
 }
 
 // NOTE: I extracted this method
-fn run(insts: &Vec<BpfInstT>) {
+pub fn run(insts: &Vec<BpfInstT>) {
     match verify_jmps(&insts) {
         Ok(_) => (),
         Err(e) => {

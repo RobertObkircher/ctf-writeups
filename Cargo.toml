@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 hex = "0.4.3"
 memmap2 = "0.5.3"
+
+arbitrary = { version = "1", features = ["derive"] }
