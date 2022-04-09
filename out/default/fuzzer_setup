@@ -1,4 +1,0 @@
-# environment variables:
-AFL_KILL_SIGNAL=9
-# command line:
-'/home/kali/.local/share/afl.rs/rustc-1.62.0-nightly-f4a7ce9/afl.rs-0.12.2/afl/bin/afl-fuzz' '-i' 'in' '-o' 'out' 'target/debug/afl-fuzz-target'
