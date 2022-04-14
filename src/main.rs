@@ -1,5 +1,7 @@
 use std::io::{self, Write};
-use std::mem;
+use std::{mem, u16};
+use std::collections::{HashMap, HashSet};
+use std::ops::AddAssign;
 use std::process::{Command, Stdio};
 use arbitrary::{Arbitrary, Unstructured};
 
@@ -107,7 +109,7 @@ impl BpfRegT {
     }
 }
 
-#[derive(Debug)]
+#[derive(arbitrary::Arbitrary, Debug)]
 pub struct BpfInstT {
     pub opc: u8,
     pub regs: u8, /* dreg, sreg 4 bits each */
@@ -890,6 +892,50 @@ fn is_supported(opc: u8) -> bool {
     return true;
 }
 
+fn posible_sizes() {
+    let mut instructions: Vec<BpfInstT> = Vec::with_capacity(u16::MAX as usize);
+    let mut all : HashMap<usize, usize>= HashMap::new();
+    for opc in 0..256 {
+        for regs in 0..256 {
+            if !is_supported(opc as u8) {
+                continue;
+            }
+            if (regs & 0xf0) > 0x90 || (regs & 0x0f) > 0x09 {
+                continue;
+            }
+            let inst = BpfInstT {
+                opc: opc as u8,
+                regs: regs as u8,
+                off: 0x0,
+                imm: 0x0afebabe as i32,
+            };
+            if inst.code().is_some() {
+                instructions.clear();
+                // push each instruction twice because of immediates...
+                instructions.push(inst);
+                instructions.push(BpfInstT {
+                    opc: opc as u8,
+                    regs: regs as u8,
+                    off: 0x0,
+                    imm: 0x0afebabe as i32,
+                });
+
+                let plen = PROLOGUELEN as u32;
+                let mut addrs: Vec<u32> = (0..instructions.len() + 1).map(|i| plen + 64 * i as u32).collect();
+                let size = PROLOGUELEN + 1000 + 8 * instructions.len() + EPILOGUELEN;
+                let mut image: Vec<u8> = vec![0; size];
+                let x = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
+                let size = (x - PROLOGUELEN - EPILOGUELEN) / 2;
+
+                all.entry(size).and_modify(|i| i.add_assign(1)).or_insert(1);
+            }
+        }
+    }
+    for (key, value) in all {
+        println!("possible_sizes: {} bytes, {} times", key, value);
+    }
+}
+
 fn print_all() {
     let mut instructions: Vec<BpfInstT> = Vec::with_capacity(u16::MAX as usize);
     let mut done = false;
@@ -929,7 +975,7 @@ fn print_all() {
     let mut image: Vec<u8> = vec![0; size];
     let x = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
 
-    disas(image.as_slice(), "x")
+    disas(&image[0..x], "x")
 }
 
 fn disas(code: &[u8], name: &str) {
@@ -953,11 +999,24 @@ fn exploit() {
     // instructions.push(BpfInstT { opc: 7, regs: 0, off: 0, imm: 0 });
     // instructions.push(BpfInstT { opc: 6, regs: 0, off: 0, imm: 0 });
     // instructions.push(BpfInstT { opc: 5, regs: 0, off: 0, imm: 0 });
-    instructions.push(BpfInstT { opc: 36, regs: 1, off: 0, imm: 0 });
+    // instructions.push(BpfInstT { opc: 36, regs: 1, off: 0, imm: 0 });
+
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 64, imm: 0 }); // 2 bytes after third iteration
+    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 64, imm: 0 }); // 2 bytes after second iteration
+    //
+    // for i in 0..64 {
+    //     instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 }); // 2 bytes after first iteration
+    // }
+
+
     run(&instructions);
 }
 
 fn main() {
+    if true {
+        // posible_sizes();
+        // return;
+    }
 
     if true {
         // print_all();
@@ -1004,8 +1063,10 @@ pub fn run(insts: &Vec<BpfInstT>) {
 
     let mut flag = false;
 
+    println!("olen {} {:?}", olen, addrs);
     for _ in 0..20 {
         if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
+            println!("nlen {} {:?}", nlen, addrs);
             if nlen == olen {
                 flag = true;
                 break;
@@ -1018,6 +1079,7 @@ pub fn run(insts: &Vec<BpfInstT>) {
     }
     let mut image: [u8; 8192 + PROLOGUELEN + EPILOGUELEN] = [0; 8192 + PROLOGUELEN + EPILOGUELEN];
 
+    assert!(flag, "flag");
     if flag {
         if let Some(nlen) = do_jit(&insts, &mut addrs, Some(&mut image)) {
             if nlen == olen {
@@ -1025,7 +1087,7 @@ pub fn run(insts: &Vec<BpfInstT>) {
 
                 final_buffer.as_mut().copy_from_slice(&image);
 
-                disas(image.as_slice(), "run");
+                disas(&image[0..nlen], "run");
 
                 let final_buffer = final_buffer.make_exec().unwrap();
                 let func = unsafe {
@@ -1045,43 +1107,39 @@ pub struct FuzzInput {
     pub instructions: Vec<BpfInstT>
 }
 
-impl<'a> Arbitrary<'a> for BpfInstT {
-    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        let off = i16::arbitrary(u)?;
-        let imm = i32::arbitrary(u)?;
-        let regs = loop {
-            let regs = u8::arbitrary(u)?;
-            if (regs & 0xf0) > 0x90 || (regs & 0x0f) > 0x09 {
-                continue;
-            }
-            break regs;
-        };
-        loop {
-            let opc = loop {
-                let opc = u8::arbitrary(u)?;
-                if is_supported(opc) {
-                    break opc;
-                }
-            };
-            let inst = BpfInstT {
-                opc: opc as u8,
-                regs: regs as u8,
-                off,
-                imm,
-            };
-            if inst.code().is_some() {
-                return Ok(inst);
-            }
-        };
-    }
-}
-
 impl<'a> Arbitrary<'a> for FuzzInput {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let len = u.arbitrary_len::<BpfInstT>()? % MAXBPFINST;
         let mut instructions = Vec::with_capacity(len.into());
-        for _ in 0..len {
-            instructions.push(BpfInstT::arbitrary(u)?);
+        for i in 0..len {
+            let index = (u16::arbitrary(u)? % (MAXBPFINST as u16 + 1)) as i16; // reduce the possibilities
+            let off = index - (i as i16 + 1);
+            let imm = i16::arbitrary(u)? as i32; // reduce the possibilities
+            let regs = loop {
+                let regs = u8::arbitrary(u)?;
+                if (regs & 0xf0) > 0x90 || (regs & 0x0f) > 0x09 {
+                    continue;
+                }
+                break regs;
+            };
+            loop {
+                let opc = loop {
+                    let opc = u8::arbitrary(u)?;
+                    if is_supported(opc) {
+                        break opc;
+                    }
+                };
+                let inst = BpfInstT {
+                    opc: opc as u8,
+                    regs: regs as u8,
+                    off,
+                    imm,
+                };
+                if inst.code().is_some() {
+                    instructions.push(inst);
+                    break;
+                }
+            };
         }
         Ok(FuzzInput{instructions})
     }
@@ -1098,7 +1156,10 @@ pub fn fuzz(insts: Vec<BpfInstT>) {
             addrs2.copy_from_slice(&addrs);
             if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
                 if nlen == olen {
-                    assert_eq!(addrs2, addrs, "same length but different!");
+                    if addrs2 != addrs {
+                        println!("same length but different!");
+                        assert_eq!(addrs2, addrs, "same length but different!");
+                    }
                     break;
                 }
                 olen = nlen;
