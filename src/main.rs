@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::mem;
 use std::process::{Command, Stdio};
+use arbitrary::{Arbitrary, Unstructured};
 
 extern crate hex;
 extern crate memmap2;
@@ -106,7 +107,7 @@ impl BpfRegT {
     }
 }
 
-#[derive(arbitrary::Arbitrary, Debug)]
+#[derive(Debug)]
 pub struct BpfInstT {
     pub opc: u8,
     pub regs: u8, /* dreg, sreg 4 bits each */
@@ -959,12 +960,12 @@ fn exploit() {
 fn main() {
 
     if true {
-        print_all();
-        return;
+        // print_all();
+        // return;
     }
 
-    // exploit();
-    // return;
+    exploit();
+    return;
 
     print!("Input: ");
     io::stdout().flush().unwrap();
@@ -1034,6 +1035,75 @@ pub fn run(insts: &Vec<BpfInstT>) {
                 println!("Running jitted code:");
                 io::stdout().flush().unwrap();
                 func();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FuzzInput {
+    pub instructions: Vec<BpfInstT>
+}
+
+impl<'a> Arbitrary<'a> for BpfInstT {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let off = i16::arbitrary(u)?;
+        let imm = i32::arbitrary(u)?;
+        let regs = loop {
+            let regs = u8::arbitrary(u)?;
+            if (regs & 0xf0) > 0x90 || (regs & 0x0f) > 0x09 {
+                continue;
+            }
+            break regs;
+        };
+        loop {
+            let opc = loop {
+                let opc = u8::arbitrary(u)?;
+                if is_supported(opc) {
+                    break opc;
+                }
+            };
+            let inst = BpfInstT {
+                opc: opc as u8,
+                regs: regs as u8,
+                off,
+                imm,
+            };
+            if inst.code().is_some() {
+                return Ok(inst);
+            }
+        };
+    }
+}
+
+impl<'a> Arbitrary<'a> for FuzzInput {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let len = u.arbitrary_len::<BpfInstT>()? % MAXBPFINST;
+        let mut instructions = Vec::with_capacity(len.into());
+        for _ in 0..len {
+            instructions.push(BpfInstT::arbitrary(u)?);
+        }
+        Ok(FuzzInput{instructions})
+    }
+}
+
+pub fn fuzz(insts: Vec<BpfInstT>) {
+    if verify_jmps(&insts).is_ok() {
+        let mut olen = insts.len() * 64;
+        let plen = PROLOGUELEN as u32;
+        let mut addrs: Vec<u32> = (0..insts.len() + 1).map(|i| plen + 64 * i as u32).collect();
+        let mut addrs2: Vec<u32> = addrs.clone();
+
+        for _ in 0..20 {
+            addrs2.copy_from_slice(&addrs);
+            if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
+                if nlen == olen {
+                    assert_eq!(addrs2, addrs, "same length but different!");
+                    break;
+                }
+                olen = nlen;
+            } else {
+                break;
             }
         }
     }

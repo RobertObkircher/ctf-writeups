@@ -1,8 +1,7 @@
 use afl::fuzz;
-use tinebpf::FuzzInput;
 
 fn main() {
-    fuzz!(|data: FuzzInput| {
-        tinebpf::main::run(&data.instructions);
+    fuzz!(|data: tinebpf::main::FuzzInput| {
+        tinebpf::main::fuzz(data.instructions);
     });
 }
