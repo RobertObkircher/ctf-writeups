@@ -15,12 +15,12 @@ BITS 64
 
     mov     rdi, rax   ; unsigned int fd
     mov     rsi, rsp   ; char *buf
-    mov     rdx, 42    ; size_t count
+    mov     rdx, 100   ; size_t count
     xor     rax, rax   ; sys_read
     syscall
 
     mov     rdi, 1      ; unsigned int fd = stdout
 ;    mov     rsi, rsp   ; const char *buf
-;    mov     rdx, 42    ; size_t count
+;    mov     rdx, 100   ; size_t count
     mov     rax, rdi    ; sys_write = 1
     syscall

@@ -1,7 +1,8 @@
 use std::io::{self, Write};
 use std::{mem, u16};
 use std::collections::{HashMap, HashSet};
-use std::ops::AddAssign;
+use std::fs::File;
+use std::ops::{Add, AddAssign};
 use std::process::{Command, Stdio};
 use arbitrary::{Arbitrary, Unstructured};
 
@@ -899,6 +900,21 @@ pub fn parse_raw_bytes(inp: &[u8]) -> Option<Vec<BpfInstT>> {
     Some(ret)
 }
 
+fn to_raw_bytes(instructions: &[BpfInstT]) -> Vec<u8> {
+    let mut raw_bytes = Vec::new();
+    for i in instructions {
+        raw_bytes.push(i.opc);
+        raw_bytes.push(i.regs);
+        raw_bytes.push(i.off as u8);
+        raw_bytes.push((i.off >> 8) as u8);
+        raw_bytes.push(i.imm as u8);
+        raw_bytes.push((i.imm >> 8) as u8);
+        raw_bytes.push((i.imm >> 16) as u8);
+        raw_bytes.push((i.imm >> 24) as u8);
+    }
+    raw_bytes
+}
+
 fn is_supported(opc: u8) -> bool {
     if opc & 0x7 == 0 {
         return ((opc & 0x18) == 0x18) && ((opc & 0xe0) == 0x00);
@@ -1115,6 +1131,11 @@ fn exploit() {
     for _ in 0..8 {
         instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
     }
+
+    let bytes = to_raw_bytes(&instructions);
+    let mut encoded = hex::encode(bytes);
+    encoded.push('\n');
+    std::fs::write("exploit.hex", encoded);
 
     run(&instructions);
 }
