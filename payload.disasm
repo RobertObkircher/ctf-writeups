@@ -1,0 +1,17 @@
+00000000  48890424          mov [rsp],rax
+00000004  48895C2408        mov [rsp+0x8],rbx
+00000009  4889E7            mov rdi,rsp
+0000000C  4831F6            xor rsi,rsi
+0000000F  4831D2            xor rdx,rdx
+00000012  B802000000        mov eax,0x2
+00000017  0F05              syscall
+00000019  4889C7            mov rdi,rax
+0000001C  4889E6            mov rsi,rsp
+0000001F  BA64000000        mov edx,0x64
+00000024  4831C0            xor rax,rax
+00000027  0F05              syscall
+00000029  BF01000000        mov edi,0x1
+0000002E  4889E6            mov rsi,rsp
+00000031  4889C2            mov rdx,rax
+00000034  B801000000        mov eax,0x1
+00000039  0F05              syscall
