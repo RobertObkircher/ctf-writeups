@@ -496,6 +496,7 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
     let mut cidx = 0;
     while cidx < b_inst.len() {
         let cidx_clone = cidx;
+        let mut ja_off = 0;
 
         let mut ilen: usize = 0;
         let mut image: [u8; 128] = [0; 128];
@@ -795,10 +796,9 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
                 let jmpoff : i64 = if cinst.off == -1 {
                     -2
                 } else {
-                    let o = addrs[((cidx + 1) as i16 + cinst.off) as usize] as i64 - addrs[cidx + 1] as i64;
-                    ja_offsets.push(o);
-                    o
+                    addrs[((cidx + 1) as i16 + cinst.off) as usize] as i64 - addrs[cidx + 1] as i64
                 };
+                ja_off = jmpoff;
 
                 if jmpoff != 0 {
                     if is_imm8!(jmpoff) {
@@ -833,11 +833,23 @@ pub fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u
         cidx += 1;
 
         ilens.push(ilen);
+        ja_offsets.push(ja_off);
         // println!("{:?}\t{}\t{}", b_inst[cidx_clone].opc, ilen, addrs[cidx_clone] - PROLOGUELEN as u32);
     }
 
-    println!("BpfJa offsets: {:?}", ja_offsets);
-    println!("ilens: {:?}", ilens);
+    print!("ilens: ");
+    for (index, (ilen, off)) in ilens.iter().zip(ja_offsets).enumerate() {
+        if index > 0 {
+            print!(", ")
+        }
+        if off != -2 && off != 0 {
+            print!("({} {})", ilen, off);
+        } else {
+            print!("{}", ilen);
+        }
+    }
+    println!();
+
     // let addrs2: Vec<u32> = addrs.iter().map(|it| if *it == 0  { 0} else {it - PROLOGUELEN as u32}).collect();
     // println!("addrs: {:?}", addrs2);
 
@@ -1058,6 +1070,14 @@ struct MachineCodeInstructions {
     sizes: Vec<usize>,
 }
 
+impl MachineCodeInstructions {
+    fn nth(&self, index: usize) -> Option<&[u8]> {
+        self.offsets.get(index).map(|&offset| {
+            &self.code[offset..offset + self.sizes[index]]
+        })
+    }
+}
+
 fn assemble_payload(assembly: &Path, machine_code: &Path, disassembly: &Path) -> MachineCodeInstructions {
     let nasm = Command::new("nasm")
         .args(["-f", "bin", "-o"])
@@ -1114,16 +1134,9 @@ impl MachineCodeInstructions {
                     sizes.push(size);
                 },
             }
-
         }
         self.offsets = offsets;
         self.sizes = sizes;
-    }
-
-    fn nth(&self, index: usize) -> Option<&[u8]> {
-        self.offsets.get(index).map(|&offset| {
-            &self.code[offset..offset + self.sizes[index]]
-        })
     }
 }
 

