@@ -21,6 +21,8 @@ The instructions themselves can't do anything interesting, but there is a bug in
 >
 > tinebpf.chal.pwni.ng 1337
 
+TODO
+
 ## Analysis Steps
 
 Initial steps:
@@ -49,14 +51,13 @@ Initial steps:
    - `fn verify_jmps(b_inst: &[BpfInstT]) -> Result<(), &str>`
    - `fn parse_raw_bytes(inp: &[u8]) -> Option<Vec<BpfInstT>>`: essentially a bitcast
    - `main`: 
-     1. Read a line from stdin, trim it, hex decode it, check that the size is at most 128 instructions and parse the input into `Vec<BpfInstT>`
-     2. Call `verify_jumps`
+     1. Read a line from stdin, trim it, hex decode it, check that the size is at most 128 instructions and parse the input into `Vec<BpfInstT>` and `verify_jumps`
      3. Initialize `addrs[i]` to `PROLOGUE.len() + 64 * i`: This represents the address of the ith instruction.
      4. Call `do_jit` 20 times with mutable `addrs` and set a boolean if the machine code size didn't change in two successive iterations.
      5. If the boolean was set: call `do_jit` again to produce a final output image, copy it into executable memory, flush stdout, and call it as a function.
-4. Google eBPF and find out what it is: BPF stands for Berkeley Packet Filter and eBPF is an extended BPF JIT virtual machine in the Linux kernel.[^1]
+4. Google eBPF and find out what it is: BPF stands for Berkeley Packet Filter and eBPF is an extended BPF JIT virtual machine in the Linux kernel.[^1][^2][^3]
 5. Check if there are any obvious mistakes (e.g. in verify_jmps) by reading most of the code. Nothing found.
-6. Create git repo.
+6. Create git repo[^5].
 7. Move part of main into function `fn run(insts: &Vec<BpfInstT>)`.
 8. Google about fuzzing and try `cargo-fuzz` and `afl`. See [Failed Attempts: Fuzzing](#fuzzing) below.
 9. Write a Rust function to systematically generate all supported instructions (with constant `off` and `imm`), write the machine code to a file and call `ndisasm` to disassemble it.
@@ -80,18 +81,21 @@ Initial steps:
     00000041  0F05              syscall
     ```
    
-    Alu operations seem to be 3 bytes, immediates 10 and a jump to itself (offset - 1) is always 2 bytes.
+    Alu operations seem to be 3 bytes, immediates 10 and a jump to itself (offset - 1) is always 2 bytes. Jumps are either 2 or 5 bytes, depending on the size of the offset. The jump offset is added to `RIP`, which contains the address of the next instruction [^6].
    
-10. At this point I gave up because I was too tired after staying up all night I and wanted to try something easier.
-    I went back to this challenge right before the end, but it was already too late and I didn't know how to continue.
-    After the CTF was over I deliberately didn't look at any solutions and a few days later I tried again.
-11. Look for overflow and indexing bugs. See [Failed Attempts: Overflow and indexing bugs](#overflow-and-indexing-bugs)
-12. If we have forward and backward jumps could happen that the size of both jumps oscilates between 8 and 32 bit immediates which would result in an invalid jump at the end.
+
+
+At this point I gave up because I was too tired after staying up all night I and wanted to try something easier.
+I went back to this challenge right before the end, but it was already too late and I didn't know how to continue.
+After the CTF was over I deliberately didn't look at any solutions and a few days later I tried again:
+
+12. Look for overflow and indexing bugs. See [Failed Attempts: Overflow and indexing bugs](#overflow-and-indexing-bugs)
+13. If we have forward and backward jumps could happen that the size of both jumps oscilates between 8 and 32 bit immediates which would result in an invalid jump at the end.
     At this point I wasted a lot of time with afl and cargo-fuzz again to try to find such a series of instructions.
     See [Failed Attempts: Fuzzing](#fuzzing) below.
-13. Try to find growing/shrinking instructions by hand: By looking at the function `code()` and at machine code I tried to find a way to grow and shrink instructions. Shrinking was easy, but I couldn't come up with anything that grew.
-14. Write code that prints a histogram of instruction sizes. The largest one was only 25 bytes, which is not enough to match the 64 bytes from `let mut olen = insts.len() * 64;`. This means we have to find oscilating instructions.
-15. Continue to look for instructions that expand: jumps with offset 0 are size zero, but there is no way to change the offset.
+14. Try to find growing/shrinking instructions by hand: By looking at the function `code()` and at machine code I tried to find a way to grow and shrink instructions. Shrinking was easy, but I couldn't come up with anything that grew.
+15. Write code that prints a histogram of instruction sizes. The largest one was only 25 bytes, which is not enough to match the 64 bytes from `let mut olen = insts.len() * 64;`. This means we have to find instructions that change size.
+16. Continue to look for instructions that expand: jumps with offset 0 are size zero, but there is no way to change the offset.
 
 Breakthrough:
 
@@ -131,9 +135,9 @@ These were some of my notes:
 
 It follows that `124 <= s <= 125`.
 
-When I implemented this I realized that I would still need an expanding instruction to actually get into case 2.
+Initially I thought that we would start in case 2, but when I implemented this I realized that it would still require an expanding instruction to get there.
 
-The final exploit was found with a bit of experimentation. It is described below.
+The final exploit was found with a bit of trial and error. It is described below.
 
 ## Vulnerabilities / Exploitable Issue(s)
 
@@ -157,7 +161,7 @@ fn encode_immediate(machine_code: &[u8], jump_offset: u8) -> u64 {
 }
 ```
 
-The `Dockerfile` tells us that the flag is in a file. The following assembly code can read it and write it to stdout:
+The `Dockerfile` tells us that the flag is in a file. The following assembly code can read it and write it to stdout using linux system calls [^7]:
 
 ```
 BITS 64
@@ -395,11 +399,32 @@ FLAG{TEST_FLAG}
 
 ## Failed Attempts
 
+### Overflow and indexing bugs
+
+While reading/skimming the code I thought about lots of logic bugs. Here are some of them:
+
+Look at `emit_cond_jump` for possible overflows. The macros `is_imm8` and `is_simm32` seem to be correct, but when `joff` is computed there is a suspicious cast to `i16`, even though `verify_jumps` treats `idx` and `off` as `i32`:
+```rust
+    let joff = addrs[((cidx + 1) as i16 + off) as usize] as i64 - addrs[cidx + 1] as i64;
+```
+
+- `cidx + 1` is in range (0, 128]
+- `off` is an `i16` that is part of the input
+- `verify_jumps` ensures that their 32 bit sum is in (1, 128]. This means that there is probably no overflow.
+
+Even if there were an overflow it would not be exploitable, because the `Dockerfile` copies a debug build, which means that overflow checks are probably enabled.
+
+Look at the match statement in `do_jit`. There are 5 patterns that start with `BpfJmp`. The first 4 simply call `emit_cond_jump`.
+At first glance last one seems interesting, because it sets `jmpoff` to -2 if `cinst.off == -1` and it emits a 2 byte `JMP rel8` instruction (relative to the EIP register, which contains the address of following instruction). However this simply avoids one extra iteration until the offset could be computed from `addrs`.
+I also looked at the opcode bytes of `emit_cond_jump` and of the last one, but they seem reasonable.
+
+Look at `veriy_jumps`: Think about jumping into immediates or other indexing bugs. Find nothing.
+
 ### Fuzzing
 
 I tried fuzzing with random instructions to produce invalid jumps, but in hindsight it would have been better to use a more systematic approach first.
 
-I followed the rust fuzzing book. [^3]
+I followed the rust fuzzing book. [^4]
 I couldn't get `cargo-fuzz` to work. 
 `afl` worked but with no results.
 
@@ -483,50 +508,26 @@ pub fn fuzz(insts: Vec<BpfInstT>) {
 }
 ```
 
-### Overflow and indexing bugs
-
-While reading/skimming the code I thought about lots of logic bugs. Here are some of them:
-
-Look at `emit_cond_jump` for possible overflows. The macros `is_imm8` and `is_simm32` seem to be correct, but when `joff` is computed there is a suspicious cast to `i16`, even though `verify_jumps` treats `idx` and `off` as `i32`:
-```rust
-    let joff = addrs[((cidx + 1) as i16 + off) as usize] as i64 - addrs[cidx + 1] as i64;
-```
-
-- `cidx + 1` is in range (0, 128]
-- `off` is an `i16` that is part of the input
-- `verify_jumps` ensures that their 32 bit sum is in (1, 128]. This means that there is probably no overflow. 
-
-Even if there were an overflow it would not be exploitable, because the `Dockerfile` copies a debug build, which means that overflow checks are probably enabled.
-
-Look at the match statement in `do_jit`. There are 5 patterns that start with `BpfJmp`. The first 4 simply call `emit_cond_jump`.
-At first glance last one seems interesting, because it sets `jmpoff` to -2 if `cinst.off == -1` and it emits a 2 byte `JMP rel8` instruction (relative to the EIP register, which contains the address of following instruction). However this simply avoids one extra iteration until the offset could be computed from `addrs`.
-I also looked at the opcode bytes of `emit_cond_jump` and of the last one, but they seem reasonable.
-
-Look at `veriy_jumps`: Think about jumping into immediates or other indexing bugs. Find nothing.
-
 ## Alternative Solutions
 
-> If you can think of an alternative solution (or there are others already published), compare your attempts with those.
+TODO
 
 ## Lessons Learned
 
-> Document what you learned during the competition.
- 
 - Skipping sleep was a bad idea
-- I shouldn't have given up without asking others
-- How to fuzz rust code with `cargo-fuzz` and `afl`. 
-- The timeout parameter of cargo fuzz didn't work.
-- I learned about the `Arbitrary` trait to generate random Rust datastructures.
+- Maybe I shouldn't have given up without asking others
+- Fuzzing is not an alternative to thinking.
+- `afl` worked better than `cargo-fuzz` (e.g. the timeout of cargo fuzz didn't work).
+- I learned about the `Arbitrary` trait to generate random datastructures.
 - I learned what eBPF is
 
 ## References
 
-> List external resources (academic papers, technical blogs, CTF writeups, ...) you used while working on this task.
-
-- [^1]: eBPF: https://ebpf.io/ https://en.wikipedia.org/wiki/Berkeley_Packet_Filter
-- [^3]: fuzzing Rust (cargo-fuzz and afl): https://rust-fuzz.github.io/book/introduction.html
-- [^5] unofficial eBPF documentation: https://github.com/iovisor/bpf-docs/blob/master/eBPF.md
-- git repo: https://gitlab.defbra.xyz/ro/tinebpf (ssh://git@gitlab.defbra.xyz:1850/ro/tinebpf.git)
-- amd64 instructions: https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
-- http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
+[^1] eBPF: https://ebpf.io/ 
+[^2] eBPF: https://en.wikipedia.org/wiki/Berkeley_Packet_Filter
+[^3] unofficial eBPF documentation: https://github.com/iovisor/bpf-docs/blob/master/eBPF.md
+[^4] Rust Fuzz Book, cargo-fuzz, AFL: https://rust-fuzz.github.io/book/introduction.html
+[^5] git repo: https://gitlab.defbra.xyz/ro/tinebpf
+[^6] x86_64 refernece manual: https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
+[^7] http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
 
