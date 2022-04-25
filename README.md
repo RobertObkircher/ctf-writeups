@@ -2,12 +2,6 @@
 
 Participant: Robert Obkircher
 
-This repository contains my solution but also parts of the handout:
-
-- Archive: `tinebpf.*.tgz`
-- Modified: `Cargo.lock`, `Cargo.toml`, `src/main.rs`
-- Unmodified: `docker-compose.yml`, `Dockerfile`, `flag.txt`, `target/debug/tinebpf`, `xinetd.conf`
-
 ## TL;DR / Short Summary
 
 We are given the source code of a rust program that reads hex encoded eBPF like instructions, jit compiles them into x86_64 machine code and executes it.
@@ -21,7 +15,13 @@ The instructions themselves can't do anything interesting, but there is a bug in
 >
 > tinebpf.chal.pwni.ng 1337
 
-TODO
+The title and task description already suggested that this task would be related to eBPF.
+BPF stands for Berkeley Packet Filter and eBPF is an extended BPF JIT virtual machine in the Linux kernel.[^1][^2][^3]
+
+The handout (`tinebpf.*.tgz`) contained the follwing files that are also included in this repository:
+
+- Modified: `Cargo.lock`, `Cargo.toml`, `src/main.rs`
+- Unmodified: `docker-compose.yml`, `Dockerfile`, `flag.txt`, `target/debug/tinebpf`, `xinetd.conf`
 
 ## Analysis Steps
 
@@ -55,12 +55,11 @@ Initial steps:
      3. Initialize `addrs[i]` to `PROLOGUE.len() + 64 * i`: This represents the address of the ith instruction.
      4. Call `do_jit` 20 times with mutable `addrs` and set a boolean if the machine code size didn't change in two successive iterations.
      5. If the boolean was set: call `do_jit` again to produce a final output image, copy it into executable memory, flush stdout, and call it as a function.
-4. Google eBPF and find out what it is: BPF stands for Berkeley Packet Filter and eBPF is an extended BPF JIT virtual machine in the Linux kernel.[^1][^2][^3]
-5. Check if there are any obvious mistakes (e.g. in verify_jmps) by reading most of the code. Nothing found.
-6. Create git repo[^5].
-7. Move part of main into function `fn run(insts: &Vec<BpfInstT>)`.
-8. Google about fuzzing and try `cargo-fuzz` and `afl`. See [Failed Attempts: Fuzzing](#fuzzing) below.
-9. Write a Rust function to systematically generate all supported instructions (with constant `off` and `imm`), write the machine code to a file and call `ndisasm` to disassemble it.
+4. Check if there are any obvious mistakes (e.g. in verify_jmps) by reading most of the code. Nothing found.
+5. Create git repo[^5].
+6. Move part of main into function `fn run(insts: &Vec<BpfInstT>)`.
+7. Google about fuzzing and try `cargo-fuzz` and `afl`. See [Failed Attempts: Fuzzing](#fuzzing) below.
+8. Write a Rust function to systematically generate all supported instructions (with constant `off` and `imm`), write the machine code to a file and call `ndisasm` to disassemble it.
    Notice that there are push/pop instructions generated. However, they don't allow us to manipulate the caller stack and that wouldn't help anyway because the epilogue calls system exit.  
    Example instruction: `BpfInstT { opc: 36, regs: 1, off: 0, imm: 0 }`
     ```
@@ -87,15 +86,15 @@ Initial steps:
 
 At this point I gave up because I was too tired after staying up all night I and wanted to try something easier.
 I went back to this challenge right before the end, but it was already too late and I didn't know how to continue.
-After the CTF was over I deliberately didn't look at any solutions and a few days later I tried again:
+A few days later I tried again:
 
-12. Look for overflow and indexing bugs. See [Failed Attempts: Overflow and indexing bugs](#overflow-and-indexing-bugs)
-13. If we have forward and backward jumps could happen that the size of both jumps oscilates between 8 and 32 bit immediates which would result in an invalid jump at the end.
+9.  Look for overflow and indexing bugs. See [Failed Attempts: Overflow and indexing bugs](#overflow-and-indexing-bugs)
+10. If we have forward and backward jumps could happen that the size of both jumps oscilates between 8 and 32 bit immediates which would result in an invalid jump at the end.
     At this point I wasted a lot of time with afl and cargo-fuzz again to try to find such a series of instructions.
     See [Failed Attempts: Fuzzing](#fuzzing) below.
-14. Try to find growing/shrinking instructions by hand: By looking at the function `code()` and at machine code I tried to find a way to grow and shrink instructions. Shrinking was easy, but I couldn't come up with anything that grew.
-15. Write code that prints a histogram of instruction sizes. The largest one was only 25 bytes, which is not enough to match the 64 bytes from `let mut olen = insts.len() * 64;`. This means we have to find instructions that change size.
-16. Continue to look for instructions that expand: jumps with offset 0 are size zero, but there is no way to change the offset.
+11. Try to find growing/shrinking instructions by hand: By looking at the function `code()` and at machine code I tried to find a way to grow and shrink instructions. Shrinking was easy, but I couldn't come up with anything that grew.
+12. Write code that prints a histogram of instruction sizes. The largest one was only 25 bytes, which is not enough to match the 64 bytes from `let mut olen = insts.len() * 64;`. This means we have to find instructions that change size.
+13. Continue to look for instructions that expand: jumps with offset 0 are size zero, but there is no way to change the offset.
 
 Breakthrough:
 
@@ -141,7 +140,7 @@ The final exploit was found with a bit of trial and error. It is described below
 
 ## Vulnerabilities / Exploitable Issue(s)
 
-Invalid addresses are used when generating code, which allows us to jump into an immediate.
+Invalid addresses are used when generating code, which allows us to jump into an immediate and execute arbitrary code.
 
 ## Solution
 
@@ -510,7 +509,7 @@ pub fn fuzz(insts: Vec<BpfInstT>) {
 
 ## Alternative Solutions
 
-TODO
+I'm not aware of any alternative solutions.
 
 ## Lessons Learned
 
