@@ -523,11 +523,17 @@ TODO
 
 ## References
 
-[^1] eBPF: https://ebpf.io/ 
-[^2] eBPF: https://en.wikipedia.org/wiki/Berkeley_Packet_Filter
-[^3] unofficial eBPF documentation: https://github.com/iovisor/bpf-docs/blob/master/eBPF.md
-[^4] Rust Fuzz Book, cargo-fuzz, AFL: https://rust-fuzz.github.io/book/introduction.html
-[^5] git repo: https://gitlab.defbra.xyz/ro/tinebpf
-[^6] x86_64 refernece manual: https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
-[^7] http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
+[^1]: eBPF: https://ebpf.io/ 
+
+[^2]: eBPF: https://en.wikipedia.org/wiki/Berkeley_Packet_Filter
+
+[^3]: unofficial eBPF documentation: https://github.com/iovisor/bpf-docs/blob/master/eBPF.md
+
+[^4]: Rust Fuzz Book, cargo-fuzz, AFL: https://rust-fuzz.github.io/book/introduction.html
+
+[^5]: git repo: https://gitlab.defbra.xyz/ro/tinebpf
+
+[^6]: x86_64 refernece manual: https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
+
+[^7]: http://blog.rchapman.org/posts/Linux_System_Call_Table_for_x86_64/
 
