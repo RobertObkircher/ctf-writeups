@@ -397,7 +397,7 @@ FLAG{TEST_FLAG}
 
 Jumps and targets. All of them are forward except j1:
 
-| j6 | j3 j4 j5 | t6 | i1 | t1  | j2 | t3 t4 t5 | j1 | t2 |
+| j6 | j3 j4 j5 | i1 | t6 | t1  | j2 | t3 t4 t5 | j1 | t2 |
 |----|----------|----|----|-----|----|----------|----|----|
 
 | Iteration | Description                                                                                |
