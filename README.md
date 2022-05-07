@@ -2,6 +2,8 @@
 
 Participant: Robert Obkircher
 
+Slides: https://docs.google.com/presentation/d/1CLnvVbANelJ5CRLCo5P0zIVUWNLcF50gveKtx0Dja0s/edit?usp=sharing
+
 ## TL;DR / Short Summary
 
 We are given the source code of a rust program that reads hex encoded eBPF like instructions, jit compiles them into x86_64 machine code and executes it.
