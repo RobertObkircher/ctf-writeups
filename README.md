@@ -319,7 +319,7 @@ fn exploit() {
 
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 4 + 1*2, imm: 0 }); // j6
 
-    instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 10*2 + 4, imm: 0 }); // j3
+    instructions.push(BpfInstT { opc: 5, regs: 0, off: 2 + 1 + 11*2 + 2, imm: 0 }); // j3
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 1 + 1 + 11*2 + 5, imm: 0 }); // j4
     instructions.push(BpfInstT { opc: 5, regs: 0, off: 0 + 1 + 11*2 + 7, imm: 0 }); // j5
 
