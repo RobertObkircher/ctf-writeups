@@ -161,7 +161,7 @@ The following assembly code can read it and write it to stdout using linux syste
 ```
 BITS 64
 
-; NOTE: instructions must be <= 6 bytes
+; NOTE: instructions must be <= 6 bytes and relative jumps are not supported
 ;
 ; preconditions:
 ;   rax, rbx contain "flag.txt\0"
