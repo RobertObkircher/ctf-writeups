@@ -565,7 +565,7 @@ I'm not aware of any alternative solutions.
 
 [^4]: Rust Fuzz Book, cargo-fuzz, AFL: https://rust-fuzz.github.io/book/introduction.html
 
-[^5]: git repos: https://gitlab.defbra.xyz/ro/tinebpf and https://github.com/RobertObkircher/plaidctf2022-tinebpf
+[^5]: git repo: https://github.com/RobertObkircher/ctf-writeups/tree/main/2022-plaidctf-tinebpf
 
 [^6]: x86_64 refernece manual: https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
 
