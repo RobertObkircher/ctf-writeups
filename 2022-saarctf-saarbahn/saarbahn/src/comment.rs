@@ -1,5 +1,9 @@
 use std::{env, fs, io::Write, io::Read, path::Path};
 
+fn is_valid_stop(stop: &Path) -> bool {
+    return stop.canonicalize().unwrap().starts_with("/home/saarbahn/saarbahn/data/stops");
+}
+
 /// Write comment to file. If it exists, append and separate by ,
 pub fn write_personal_comment(email_hash: String, comment: String) -> Result<(), std::io::Error> {
     let comment = comment.replace(',', ";");
@@ -56,6 +60,11 @@ pub fn write_rating(stop: String, comment: String) -> Result<(), std::io::Error>
     }
 
     let filepath = Path::new(&file);
+
+    if !is_valid_stop(&filepath) {
+        return Ok(())
+    }
+
     let metadata = fs::metadata(&filepath);
     match metadata {
         Ok(metadata) => {
@@ -123,6 +132,11 @@ pub fn get_ratings(stop: String) -> Vec<String> {
     let mut path = env::current_dir().expect("Could not read current directory!");
     path.push("data/stops/");
     path.push(stop);
+
+    if !is_valid_stop(&path) {
+        return Vec::new();
+    }
+
     let metadata = fs::metadata(&path);
 
     match metadata {

@@ -285,16 +285,16 @@ fn generate_group_ticket(user: User, friends: Form<GroupTicket>) -> Template {
     let mail = user.email;
 
     let mut friends_vec = friends.friends.to_vec();
-    friends_vec.push(mail);
 
     let mut list = Vec::new();
 
     friends_vec.iter().for_each(|friend| {
         let friend_string = friend.to_string();
-        if !list.contains(&friend_string) {
+        if !list.contains(&friend_string) && friend_string != mail {
             list.insert(0, friend_string);
         }
     });
+    list.insert(0, mail);
 
     let data = json!(list);
 
