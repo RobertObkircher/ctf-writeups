@@ -122,7 +122,7 @@ void main() {
 
 I used `cutter` to decompile the binaries. The relevant functions are `shell_land` and `vacation`.
 
-The buffer overflow in `vacation`, which is explained [below](vulnerabilities--exploitable-issues), allows us to set the return address to `0x0040119e` inside `shell_land`.
+The buffer overflow in `vacation`, which is explained [below](#vulnerabilities--exploitable-issues), allows us to set the return address to `0x0040119e` inside `shell_land`.
 
 Initially I returend to `0x00401196`, but then the exploit only worked locally.
 The reason was a segmentation fault, because `rsp` was not aligned to 16 bytes at function entry as specified by the System V ABI.
